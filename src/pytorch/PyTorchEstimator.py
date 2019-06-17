@@ -25,6 +25,8 @@ from pyspark.ml import Estimator
 from pyspark.context import SparkContext
 from pyspark.sql.session import SparkSession
 from PyTorchModel import PyTorchModel
+import uuid
+
 
 sc = SparkContext.getOrCreate()
 spark = SparkSession(sc)
@@ -77,20 +79,18 @@ class PyTorchEstimator(Estimator):
             compute_target.wait_for_completion(show_output=True)
 
         # Upload dataset to datastore
-        # dataset.write.mode('overwrite').parquet('data/dataset.parquet')
-        output_dir = 'file:///tmp/data'
-        output_filename = 'dataset.parquet'
-        output_url = os.path.join(output_dir, output_filename) 
-        with materialize_dataset(spark, output_url, self.unischema):
+        local_path = 'file:///tmp/dataset'
+        datastore_path = 'data/dataset' + str(uuid.uuid4())
+        with materialize_dataset(spark, local_path, self.unischema):
             dataset.coalesce(10) \
                 .write \
                 .mode('overwrite') \
-                .parquet(output_url)
-        datastore.upload(src_dir='/tmp/data', target_path='data', overwrite=True, show_progress=True)
+                .parquet(local_path)
+        datastore.upload(src_dir='/tmp/dataset', target_path=datastore_path, overwrite=True, show_progress=True)
 
         # Get dataset path on datastore
         # path_on_datastore = 'tmp/data/dataset.parquet'
-        ds_data = datastore.path(output_url)
+        ds_data = datastore.path(datastore_path)
 
         # Train on remote compute
         script_params = {
@@ -115,7 +115,7 @@ class PyTorchEstimator(Estimator):
                             node_count=self.nodeCount,
                             distributed_training=MpiConfiguration(),
                             use_gpu=True,
-                            pip_packages=['pandas', 'pyarrow', 'pyspark'])
+                            pip_packages=['pandas', 'petastorm'])
 
         # Submit job
         run = experiment.submit(estimator)
