@@ -41,46 +41,6 @@ start_epoch = 0  # start from epoch 0 or last checkpoint epoch
 
 # ================== WIP ======================
 
-def get_dataloaders(filename):
-    # Download the file if it's not present in the datastore
-    if not os.path.exists(filename):
-        print("Downloading the data from torchvision.datasets...")
-        trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
-        testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
-        
-        # Create DataLoaders from train and test Datasets
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.train_batch_size, shuffle=True, num_workers=2)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=False, num_workers=2)
-    else:
-        print("Use the data from {}".format(filename))
-        
-        trainloader = DataLoader(make_reader('file://' + filename, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'filename')), 
-                                 batch_size=args.train_batch_size)
-        testloader = DataLoader(make_reader('file://' + filename, predicate=in_pseudorandom_split([0.75, 0.25], 1, 'filename')), 
-                                batch_size=args.test_batch_size)  
-
-        # df_dataset = spark.read.parquet(filename).toPandas()        
-        # df_dataset = pd.read_parquet(filename)
-        
-        # df_dataset.columns = ['features', 'targets']
-
-        # # Split dataframe into train and test
-        # df_trainset = df_dataset.sample(frac=0.75, random_state=200)
-        # df_testset = df_dataset.drop(df_trainset.index)
-
-        # # Create train and test tensors from Pandas dataframes
-        # trainset_features = torch.tensor(df_trainset['features'].values)
-        # trainset_targets = torch.tensor(df_trainset['targets'].values)        
-        # trainset = torch.utils.data.TensorDataset(trainset_features, trainset_targets)
-        
-        # testset_features = torch.tensor(df_testset['features'].values)
-        # testset_targets = torch.tensor(df_testset['targets'].values)        
-        # testset = torch.utils.data.TensorDataset(testset_features, testset_targets)
-        
-    # return trainset, testset
-    return trainloader, testloader
-
-
 class LeNet(nn.Module):
     def __init__(self):
         super(LeNet, self).__init__()
@@ -138,9 +98,6 @@ def train(epoch, trainloader):
         total += targets.size(0)
 
         if batch_idx % args.log_interval == 0:
-            # print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-            #     epoch, batch_idx * len(inputs), len(trainloader) * args.train_batch_size,
-            #     100. * batch_idx / len(trainloader), loss.item()))
             print('Train Epoch: {} [{}]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(inputs), loss.item()))
             
@@ -189,17 +146,9 @@ def test(epoch, testloader):
         best_acc = acc
 
 
-# trainloader, testloader = get_dataloaders(args.input_data)
-# for epoch in range(start_epoch, start_epoch+200):
-#     # TODO: Optimize this to avoid repeated CIFAR download
-#     train(epoch, trainloader)
-#     test(epoch, testloader)
-
-
 # ========================= WIP ==========================
 
 # Data
-# TODO: Add these transforms to Petastorm flow
 print('==> Preparing data..')
 
 def _transform_row_train(cifar_row):
