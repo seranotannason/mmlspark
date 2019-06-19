@@ -13,6 +13,7 @@ import shutil
 import torch
 from azureml.core.compute import ComputeTarget, AmlCompute
 from azureml.core.compute_target import ComputeTargetException
+from azureml.core.conda_dependencies import CondaDependencies
 from azureml.data.azure_storage_datastore import AzureFileDatastore, AzureBlobDatastore
 from azureml.train.dnn import PyTorch
 from azureml.core.workspace import Workspace
@@ -108,6 +109,8 @@ class PyTorchEstimator(Estimator):
 
         # Create a PyTorch estimator
         # TODO: Lighten the burden on user to manually specify pip packages
+        
+        petastorm_pkg = CondaDependencies._register_private_pip_wheel_to_blob(self.workspace, '/home/azureuser/serano-petastorm/dist/petastorm-0.9.0.dev0-py2.py3-none-any.whl')
         estimator = PyTorch(source_directory=project_folder,
                             compute_target=compute_target,
                             entry_script=self.trainingScript,
@@ -115,7 +118,8 @@ class PyTorchEstimator(Estimator):
                             node_count=self.nodeCount,
                             distributed_training=MpiConfiguration(),
                             use_gpu=True,
-                            pip_packages=['pandas', 'petastorm'])
+                            pip_packages=['pandas', 'opencv-python-headless', petastorm_pkg],
+                            conda_packages=['opencv'])
 
         # Submit job
         run = experiment.submit(estimator)

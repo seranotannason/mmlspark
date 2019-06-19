@@ -36,23 +36,27 @@ with tarfile.open(dataFile, "r:gz") as f:
 
 
 from petastorm.unischema import dict_to_spark_row, Unischema, UnischemaField
-from petastorm.codecs import ScalarCodec, NdarrayCodec
+from petastorm.codecs import ScalarCodec, NdarrayCodec, CompressedImageCodec
 from pyspark.sql.types import *
 import numpy as np
 
 # Generate Petastorm dataset
-image_zip = zip(test_dict["data"], test_dict["labels"])
+# TODO: Remove filenames when PR #393 is merged in petastorm's github
+image_zip = zip(test_dict["data"], test_dict["labels"], test_dict["filenames"])
 
 CIFARSchema = Unischema('CIFARSchema', [
-    UnischemaField('image', np.uint8, (3,32,32), NdarrayCodec(), False),
-    UnischemaField('label', np.int32, (), ScalarCodec(IntegerType()), False),
+    UnischemaField('image', np.double, (32,32,3), CompressedImageCodec('png'), False),
+    UnischemaField('label', np.int64, (), ScalarCodec(IntegerType()), False),
+    UnischemaField('filename', np.str, (), ScalarCodec(StringType()), False),
 ])
 
 def reshape_image(record):
-    image, label = record
-    return {'image': image.reshape(3,32,32), 'label': label}
+    image, label, filename = record
+    return {'image': image.reshape(32,32,3).astype(np.double), 'label': label, 'filename': filename}
 
-rows_rdd = sc.parallelize(image_zip)    .map(reshape_image)    .map(lambda x: dict_to_spark_row(CIFARSchema, x))
+rows_rdd = sc.parallelize(image_zip) \
+            .map(reshape_image) \
+            .map(lambda x: dict_to_spark_row(CIFARSchema, x))
     
 imagesWithLabels = spark.createDataFrame(rows_rdd)
 
@@ -76,11 +80,11 @@ train.printSchema()
 
 # Initializing the estimator
 workspace = Workspace('e54229a3-0e6f-40b3-82a1-ae9cda6e2b81', 'mmlspark-serano', 'playground')
-clusterName = 'train-target'
+clusterName = 'backup-train'
 trainingScript = 'pytorch_train.py'
 nodeCount = 1
 modelPath = 'outputs/model.pt'
-experimentName = 'pytorch-cifar'
+experimentName = 'pytorch-train-cifar'
 unischema = CIFARSchema
 
 estimator = PyTorchEstimator(workspace, clusterName, trainingScript, nodeCount, modelPath, experimentName, unischema)

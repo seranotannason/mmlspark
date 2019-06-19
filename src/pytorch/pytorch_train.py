@@ -17,7 +17,8 @@ import argparse
 import pandas as pd
 
 from petastorm.pytorch import DataLoader
-from petastorm import make_reader
+from petastorm import make_reader, TransformSpec
+from petastorm.predicates import in_pseudorandom_split
 
 # Get the Azure ML run object
 from azureml.core.run import Run
@@ -25,6 +26,8 @@ run = Run.get_context()
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
+parser.add_argument('--train_batch_size', default=128, type=int, help='batch size for training')
+parser.add_argument('--test_batch_size', default=100, type=int, help='batch size for testing')
 parser.add_argument('--input_data', type=str, help='training data')
 parser.add_argument('--output_dir', type=str, help='output directory')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
@@ -35,29 +38,10 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 best_acc = 0  # best test accuracy
 start_epoch = 0  # start from epoch 0 or last checkpoint epoch
 
-# Data
-# TODO: Add these transforms to Petastorm flow
-print('==> Preparing data..')
-transform_train = transforms.Compose([
-    transforms.RandomCrop(32, padding=4),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-])
-
-transform_test = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-])
-
 
 # ================== WIP ======================
 
-
-# Get Dataset from DataStore, utilizing --input_data argument
-
-def get_dataset(filename):
-    print("Filename: ", filename)
+def get_dataloaders(filename):
     # Download the file if it's not present in the datastore
     if not os.path.exists(filename):
         print("Downloading the data from torchvision.datasets...")
@@ -65,38 +49,37 @@ def get_dataset(filename):
         testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
         
         # Create DataLoaders from train and test Datasets
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True, num_workers=2)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False, num_workers=2)
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.train_batch_size, shuffle=True, num_workers=2)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=False, num_workers=2)
     else:
         print("Use the data from {}".format(filename))
         
-        # Get dataframe from Parquet datastore
-        # TODO: Add train-test split capability
-        trainloader = DataLoader(make_reader('file://' + filename), batch_size=128)
-            
+        trainloader = DataLoader(make_reader('file://' + filename, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'filename')), 
+                                 batch_size=args.train_batch_size)
+        testloader = DataLoader(make_reader('file://' + filename, predicate=in_pseudorandom_split([0.75, 0.25], 1, 'filename')), 
+                                batch_size=args.test_batch_size)  
+
         # df_dataset = spark.read.parquet(filename).toPandas()        
         # df_dataset = pd.read_parquet(filename)
         
-        df_dataset.columns = ['features', 'targets']
+        # df_dataset.columns = ['features', 'targets']
 
-        # Split dataframe into train and test
-        df_trainset = df_dataset.sample(frac=0.75, random_state=200)
-        df_testset = df_dataset.drop(df_trainset.index)
+        # # Split dataframe into train and test
+        # df_trainset = df_dataset.sample(frac=0.75, random_state=200)
+        # df_testset = df_dataset.drop(df_trainset.index)
 
-        # Create train and test tensors from Pandas dataframes
-        trainset_features = torch.tensor(df_trainset['features'].values)
-        trainset_targets = torch.tensor(df_trainset['targets'].values)        
-        trainset = torch.utils.data.TensorDataset(trainset_features, trainset_targets)
+        # # Create train and test tensors from Pandas dataframes
+        # trainset_features = torch.tensor(df_trainset['features'].values)
+        # trainset_targets = torch.tensor(df_trainset['targets'].values)        
+        # trainset = torch.utils.data.TensorDataset(trainset_features, trainset_targets)
         
-        testset_features = torch.tensor(df_testset['features'].values)
-        testset_targets = torch.tensor(df_testset['targets'].values)        
-        testset = torch.utils.data.TensorDataset(testset_features, testset_targets)
+        # testset_features = torch.tensor(df_testset['features'].values)
+        # testset_targets = torch.tensor(df_testset['targets'].values)        
+        # testset = torch.utils.data.TensorDataset(testset_features, testset_targets)
         
-    print("Trainset: ", trainset)
-    print("Testset: ", testset)
-    return trainset, testset
+    # return trainset, testset
+    return trainloader, testloader
 
-trainset, testset = get_dataset(args.input_data)
 
 class LeNet(nn.Module):
     def __init__(self):
@@ -127,6 +110,7 @@ classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship'
 # Model
 print('==> Building model..')
 net = LeNet()
+net = net.float()
 net = net.to(device)
 if device == 'cuda':
     net = torch.nn.DataParallel(net)
@@ -136,14 +120,14 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
 
 # Training
-def train(epoch):
+def train(epoch, trainloader):
     print('\nEpoch: %d' % epoch)
     net.train()
-    train_loss = 0
-    correct = 0
     total = 0
-    for batch_idx, (inputs, targets) in enumerate(trainloader):
-        inputs, targets = inputs.to(device), targets.to(device)
+    for batch_idx, sample_batched in enumerate(trainloader):
+        inputs = sample_batched['image'].float().to(device)
+        print("inputs shape: ", inputs.shape)
+        targets = sample_batched['label'].to(device)
         optimizer.zero_grad()
         outputs = net(inputs)
         loss = criterion(outputs, targets)
@@ -151,44 +135,53 @@ def train(epoch):
         optimizer.step()
         
         # ======================= WIP ====================
+        total += targets.size(0)
+
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(inputs), len(trainloader.dataset),
-                100. * batch_idx / len(trainloader), loss.item()))
+            # print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+            #     epoch, batch_idx * len(inputs), len(trainloader) * args.train_batch_size,
+            #     100. * batch_idx / len(trainloader), loss.item()))
+            print('Train Epoch: {} [{}]\tLoss: {:.6f}'.format(
+                epoch, batch_idx * len(inputs), loss.item()))
             
             # log the loss to the Azure ML run
             run.log('loss', loss.item())
+
+    print("Total samples in train set: {}".format(total))
             
         # ======================= WIP ====================
         
 
-def test(epoch):
+def test(epoch, testloader):
     global best_acc
     net.eval()
     test_loss = 0
     correct = 0
     total = 0
     with torch.no_grad():
-        for batch_idx, (inputs, targets) in enumerate(testloader):
-            inputs, targets = inputs.to(device), targets.to(device)
+        for batch_idx, sample_batched in enumerate(testloader):
+            inputs = sample_batched['image'].float().to(device)
+            targets = sample_batched['label'].to(device)
             outputs = net(inputs)
             loss = criterion(outputs, targets)
 
             test_loss += loss.item()
             _, predicted = outputs.max(1)
-            total += targets.size(0)
+            total += targets.shape[0]
             correct += predicted.eq(targets).sum().item()
 
     # ======================= WIP ====================
-    test_loss /= len(testloader.dataset)
+    test_loss /= total
+
+    print("Total samples in testset: {}".format(total))
 
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, correct, len(testloader.dataset),
-        100. * correct / len(testloader.dataset)))
+        test_loss, correct, total,
+        100. * correct / total))
     # ======================= WIP ====================
     
     # Save checkpoint.
-    acc = 100.*correct/total
+    acc = 100. * correct/total
     if acc > best_acc:
         print('Saving..')
         os.makedirs(args.output_dir, exist_ok=True)
@@ -196,6 +189,63 @@ def test(epoch):
         best_acc = acc
 
 
-for epoch in range(start_epoch, start_epoch+200):
-    train(epoch)
-    test(epoch)
+# trainloader, testloader = get_dataloaders(args.input_data)
+# for epoch in range(start_epoch, start_epoch+200):
+#     # TODO: Optimize this to avoid repeated CIFAR download
+#     train(epoch, trainloader)
+#     test(epoch, testloader)
+
+
+# ========================= WIP ==========================
+
+# Data
+# TODO: Add these transforms to Petastorm flow
+print('==> Preparing data..')
+
+def _transform_row_train(cifar_row):
+    print("cifar row type: ", type(cifar_row))
+    print("cifar row: ", cifar_row.keys())
+
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+
+    result_row = {
+        'image': transform_train(transforms.ToPILImage()(cifar_row['image'])),
+        'label': cifar_row['label']
+    }
+    return result_row
+
+def _transform_row_test(cifar_row):
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+    
+    result_row = {
+        'image': transform_test(transforms.ToPILImage()(cifar_row['image'])),
+        'label': cifar_row['label']
+    }  
+    return result_row
+
+transform_spec_train = TransformSpec(_transform_row_train, removed_fields=['filename'])
+transform_spec_test = TransformSpec(_transform_row_test, removed_fields=['filename'])
+
+filename = args.input_data
+loop_epochs = 10
+for epoch in range(loop_epochs):
+    with DataLoader(make_reader('file://' + filename, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'filename'), 
+                                transform_spec=transform_spec_train), 
+                    batch_size=args.train_batch_size) as trainloader:
+        train(epoch, trainloader)
+
+    with DataLoader(make_reader('file://' + filename, predicate=in_pseudorandom_split([0.75, 0.25], 1, 'filename'), 
+                                transform_spec=transform_spec_test), 
+                    batch_size=args.test_batch_size) as testloader:
+        test(epoch, testloader)
+
+
+# ========================= WIP ==========================
