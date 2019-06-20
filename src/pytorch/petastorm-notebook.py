@@ -80,7 +80,7 @@ train.printSchema()
 
 # Initializing the estimator
 workspace = Workspace('e54229a3-0e6f-40b3-82a1-ae9cda6e2b81', 'mmlspark-serano', 'playground')
-clusterName = 'backup-train'
+clusterName = 'train-target'
 trainingScript = 'pytorch_train.py'
 nodeCount = 1
 modelPath = 'outputs/model.pt'
