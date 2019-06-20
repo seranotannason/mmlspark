@@ -20,6 +20,8 @@ from petastorm.pytorch import DataLoader
 from petastorm import make_reader, TransformSpec
 from petastorm.predicates import in_pseudorandom_split
 
+from pytorch_net import ResNet18
+
 # Get the Azure ML run object
 from azureml.core.run import Run
 run = Run.get_context()
@@ -119,7 +121,7 @@ def test(epoch, testloader):
     if acc > best_acc:
         print('Saving..')
         os.makedirs(args.output_dir, exist_ok=True)
-        torch.save(net, os.path.join(args.output_dir, 'model.pt'))        
+        torch.save(net.state_dict(), os.path.join(args.output_dir, 'model.pt'))
         best_acc = acc
 
 

@@ -12,6 +12,7 @@ import os
 import shutil
 import torch
 import ntpath
+import importlib.util
 from azureml.core.compute import ComputeTarget, AmlCompute
 from azureml.core.compute_target import ComputeTargetException
 from azureml.core.conda_dependencies import CondaDependencies
@@ -51,10 +52,12 @@ class PyTorchEstimator(Estimator):
 
     """
 
-    def __init__(self, workspace, clusterName, trainingScript, nodeCount, modelPath, experimentName, unischema):
+    def __init__(self, workspace, clusterName, trainingScript, modelScript, modelName, nodeCount, modelPath, experimentName, unischema):
         self.workspace = workspace
         self.clusterName = clusterName
         self.trainingScript = trainingScript
+        self.modelScript = modelScript
+        self.modelName = modelName
         self.nodeCount = nodeCount
         self.modelPath = modelPath
         self.experimentName = experimentName
@@ -104,9 +107,18 @@ class PyTorchEstimator(Estimator):
         project_folder = './pytorch-train'
         os.makedirs(project_folder, exist_ok=True)
         shutil.copy(self.trainingScript, project_folder)
+        shutil.copy(self.modelScript, project_folder)
 
-        # Extract name of training script from full path
+        # Extract names of scripts from full path to pass as argument to PyTorch
         training_script_name = ntpath.basename(self.trainingScript)
+
+        # Extract model class definition
+        spec = importlib.util.spec_from_file_location(self.modelName, self.modelScript)
+        foo = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(foo)
+        torchModel = getattr(foo, self.modelName)()
+
+        print("{} model successfully imported!".format(self.modelName))
 
         # Create an experiment
         experiment = Experiment(self.workspace, name=self.experimentName)
@@ -133,7 +145,7 @@ class PyTorchEstimator(Estimator):
         cloudPath = os.path.join(self.modelPath, 'model.pt')
         localPath = os.path.join(os.getcwd(), 'model.pt')
         run.download_file(cloudPath, localPath)
-        torchModel = torch.load(localPath) # TODO: fix this
+        torchModel.load_state_dict(torch.load(localPath))
         torchModel.eval()
 
         # Create PyTorchModel object from trained PyTorch model

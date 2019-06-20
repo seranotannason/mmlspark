@@ -80,12 +80,14 @@ train.printSchema()
 workspace = Workspace('e54229a3-0e6f-40b3-82a1-ae9cda6e2b81', 'mmlspark-serano', 'playground')
 clusterName = 'train-target'
 trainingScript = '/home/azureuser/mmlspark/src/pytorch/pytorch_train.py'
+modelScript = '/home/azureuser/mmlspark/src/pytorch/pytorch_net.py'
+modelName = 'ResNet18'
 nodeCount = 1
 modelPath = './outputs'
 experimentName = 'pytorch-train-cifar'
 unischema = CIFARSchema
 
-estimator = PyTorchEstimator(workspace, clusterName, trainingScript, nodeCount, modelPath, experimentName, unischema)
+estimator = PyTorchEstimator(workspace, clusterName, trainingScript, modelScript, modelName, nodeCount, modelPath, experimentName, unischema)
 
 
 # In[ ]:
