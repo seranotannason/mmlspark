@@ -11,6 +11,7 @@ if sys.version >= '3':
 import os
 import shutil
 import torch
+import ntpath
 from azureml.core.compute import ComputeTarget, AmlCompute
 from azureml.core.compute_target import ComputeTargetException
 from azureml.core.conda_dependencies import CondaDependencies
@@ -42,7 +43,7 @@ class PyTorchEstimator(Estimator):
 
         workspace (Workspace): Azure ML Workspace object
         clusterName (str): Name of Azure ML Compute Target in the above workspace
-        trainingScript (str): Name of training script
+        trainingScript (str): Full path to training script
         nodeCount (int): Number of nodes to train on
         modelPath (str): Cloud path that the model will be saved to, relative to /outputs dir
         experimentName (str): Name of current experiment
@@ -104,16 +105,18 @@ class PyTorchEstimator(Estimator):
         os.makedirs(project_folder, exist_ok=True)
         shutil.copy(self.trainingScript, project_folder)
 
+        # Extract name of training script from full path
+        training_script_name = ntpath.basename(self.trainingScript)
+
         # Create an experiment
         experiment = Experiment(self.workspace, name=self.experimentName)
 
         # Create a PyTorch estimator
         # TODO: Lighten the burden on user to manually specify pip packages
-        
         petastorm_pkg = CondaDependencies._register_private_pip_wheel_to_blob(self.workspace, '/home/azureuser/serano-petastorm/dist/petastorm-0.9.0.dev0-py2.py3-none-any.whl')
         estimator = PyTorch(source_directory=project_folder,
                             compute_target=compute_target,
-                            entry_script=self.trainingScript,
+                            entry_script=training_script_name,
                             script_params=script_params,
                             node_count=self.nodeCount,
                             distributed_training=MpiConfiguration(),
@@ -128,9 +131,10 @@ class PyTorchEstimator(Estimator):
         run.wait_for_completion(show_output=True)
 
         # Download PyTorch model from completed job
+        cloudPath = os.path.join(self.modelPath, 'model.pt')
         localPath = os.path.join(os.getcwd(), 'model.pt')
-        run.download_file(self.modelPath, localPath)
-        torchModel = torch.load(localPath)
+        run.download_file(cloudPath, localPath)
+        torchModel = torch.load(localPath) # TODO: fix this
         torchModel.eval()
 
         # Create PyTorchModel object from trained PyTorch model

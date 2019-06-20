@@ -159,6 +159,7 @@ def train(epoch, trainloader):
     print('\nEpoch: %d' % epoch)
     net.train()
     total = 0
+    running_loss = 0.0
     for batch_idx, sample_batched in enumerate(trainloader):
         inputs = sample_batched['image'].float().to(device)
         targets = sample_batched['label'].to(device)
@@ -170,13 +171,15 @@ def train(epoch, trainloader):
         
         # ======================= WIP ====================
         total += targets.size(0)
+        running_loss += loss.item()
 
         if batch_idx % args.log_interval == 0:
+            # log the loss to the Azure ML run
+            run.log('loss', running_loss/(batch_idx + 1))
+ 
             print('Train Epoch: {} [{}]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(inputs), loss.item()))
             
-            # log the loss to the Azure ML run
-            run.log('loss', loss.item())
 
     print("Total samples in train set: {}".format(total))
             
@@ -255,12 +258,12 @@ transform_spec_train = TransformSpec(_transform_row_train, removed_fields=['file
 transform_spec_test = TransformSpec(_transform_row_test, removed_fields=['filename'])
 
 for epoch in range(args.loop_epochs):
-    with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'filename'), 
+    with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'image'), 
                                 transform_spec=transform_spec_train), 
                     batch_size=args.train_batch_size) as trainloader:
         train(epoch, trainloader)
 
-    with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 1, 'filename'), 
+    with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 1, 'image'), 
                                 transform_spec=transform_spec_test), 
                     batch_size=args.test_batch_size) as testloader:
         test(epoch, testloader)
