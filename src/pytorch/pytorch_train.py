@@ -26,7 +26,7 @@ run = Run.get_context()
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.01, type=float, help='learning rate')
-parser.add_argument('--loop_epochs', default=10, type=float, help='number of epochs')
+parser.add_argument('--loop_epochs', default=5, type=float, help='number of epochs')
 parser.add_argument('--train_batch_size', default=128, type=int, help='batch size for training')
 parser.add_argument('--test_batch_size', default=100, type=int, help='batch size for testing')
 parser.add_argument('--input_data', type=str, help='training data')
@@ -254,8 +254,8 @@ def _transform_row_test(cifar_row):
     }  
     return result_row
 
-transform_spec_train = TransformSpec(_transform_row_train, removed_fields=['filename'])
-transform_spec_test = TransformSpec(_transform_row_test, removed_fields=['filename'])
+transform_spec_train = TransformSpec(_transform_row_train)
+transform_spec_test = TransformSpec(_transform_row_test)
 
 for epoch in range(args.loop_epochs):
     with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'image'), 

@@ -41,18 +41,16 @@ from pyspark.sql.types import *
 import numpy as np
 
 # Generate Petastorm dataset
-# TODO: Remove filenames when PR #393 is merged in petastorm's github
-image_zip = zip(test_dict["data"], test_dict["labels"], test_dict["filenames"])
+image_zip = zip(test_dict["data"], test_dict["labels"])
 
 CIFARSchema = Unischema('CIFARSchema', [
     UnischemaField('image', np.double, (32,32,3), CompressedImageCodec('png'), False),
-    UnischemaField('label', np.int64, (), ScalarCodec(IntegerType()), False),
-    UnischemaField('filename', np.str, (), ScalarCodec(StringType()), False),
+    UnischemaField('label', np.int64, (), ScalarCodec(IntegerType()), False)
 ])
 
 def reshape_image(record):
-    image, label, filename = record
-    return {'image': image.reshape(32,32,3).astype(np.double), 'label': label, 'filename': filename}
+    image, label = record
+    return {'image': image.reshape(32,32,3).astype(np.double), 'label': label}
 
 rows_rdd = sc.parallelize(image_zip) \
             .map(reshape_image) \

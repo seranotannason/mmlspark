@@ -127,7 +127,6 @@ class PyTorchEstimator(Estimator):
         # Submit job
         run = experiment.submit(estimator)
         print("Job submitted!")
-        RunDetails(run).show()
         run.wait_for_completion(show_output=True)
 
         # Download PyTorch model from completed job
