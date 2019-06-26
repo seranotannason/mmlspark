@@ -86,6 +86,7 @@ class PyTorchEstimator(Estimator):
         # Upload dataset to datastore
         local_path = 'file:///tmp/dataset'
         datastore_path = 'data/dataset' + str(uuid.uuid4())
+        # TODO: wasb 
         with materialize_dataset(spark, local_path, self.unischema):
             dataset.coalesce(10) \
                 .write \
@@ -112,12 +113,6 @@ class PyTorchEstimator(Estimator):
         # Extract names of scripts from full path to pass as argument to PyTorch
         training_script_name = ntpath.basename(self.trainingScript)
 
-        # Extract model class definition
-        spec = importlib.util.spec_from_file_location(self.modelName, self.modelScript)
-        foo = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(foo)
-        torchModel = getattr(foo, self.modelName)()
-
         print("{} model successfully imported!".format(self.modelName))
 
         # Create an experiment
@@ -139,16 +134,11 @@ class PyTorchEstimator(Estimator):
         # Submit job
         run = experiment.submit(estimator)
         print("Job submitted!")
-        run.wait_for_completion(show_output=True)
 
-        # Download PyTorch model from completed job
-        cloudPath = os.path.join(self.modelPath, 'model.pt')
-        localPath = os.path.join(os.getcwd(), 'model.pt')
-        run.download_file(cloudPath, localPath)
-        torchModel.load_state_dict(torch.load(localPath))
-        torchModel.eval()
-
-        # Create PyTorchModel object from trained PyTorch model
-        fittedModel = PyTorchModel(torchModel)
-
+        # ======================= WIP ==========================
+        # TODO: Remove modelname and modelscript once the MLFlow Pytorch code-less model loading is tested
+        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.modelName, self.modelScript, self.unischema)
         return fittedModel
+
+        # ======================= WIP ==========================
+
