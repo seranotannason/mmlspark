@@ -22,13 +22,20 @@ from petastorm.predicates import in_pseudorandom_split
 
 from pytorch_net import ResNet18
 
+# ==================== WIP: Try to save codeless PyTorch model ======================
+import mlflow
+import mlflow.pytorch
+from mlflow.utils.environment import _mlflow_conda_env
+import cloudpickle
+# ==================== WIP: Try to save codeless PyTorch model ======================
+
 # Get the Azure ML run object
 from azureml.core.run import Run
-run = Run.get_context()
+aml_run = Run.get_context()
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.01, type=float, help='learning rate')
-parser.add_argument('--loop_epochs', default=5, type=float, help='number of epochs')
+parser.add_argument('--loop_epochs', default=2, type=float, help='number of epochs')
 parser.add_argument('--train_batch_size', default=128, type=int, help='batch size for training')
 parser.add_argument('--test_batch_size', default=100, type=int, help='batch size for testing')
 parser.add_argument('--input_data', type=str, help='training data')
@@ -65,27 +72,24 @@ def train(epoch, trainloader):
     for batch_idx, sample_batched in enumerate(trainloader):
         inputs = sample_batched['image'].float().to(device)
         targets = sample_batched['label'].to(device)
+
         optimizer.zero_grad()
         outputs = net(inputs)
         loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
         
-        # ======================= WIP ====================
         total += targets.size(0)
         running_loss += loss.item()
 
         if batch_idx % args.log_interval == 0:
             # log the loss to the Azure ML run
-            run.log('loss', running_loss/(batch_idx + 1))
+            aml_run.log('loss', running_loss/(batch_idx + 1))
  
             print('Train Epoch: {} [{}]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(inputs), loss.item()))
-            
 
     print("Total samples in train set: {}".format(total))
-            
-        # ======================= WIP ====================
         
 
 def test(epoch, testloader):
@@ -106,27 +110,24 @@ def test(epoch, testloader):
             total += targets.shape[0]
             correct += predicted.eq(targets).sum().item()
 
-    # ======================= WIP ====================
     test_loss /= total
-
     print("Total samples in testset: {}".format(total))
-
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, total,
         100. * correct / total))
-    # ======================= WIP ====================
     
     # Save checkpoint.
     acc = 100. * correct/total
     if acc > best_acc:
-        print('Saving..')
-        os.makedirs(args.output_dir, exist_ok=True)
-        torch.save(net.state_dict(), os.path.join(args.output_dir, 'model.pt'))
         best_acc = acc
+        # print('Saving..')
+        # os.makedirs(args.output_dir, exist_ok=True)
+        # torch.save(net.state_dict(), os.path.join(args.output_dir, 'model.pt'))
 
 
-# ========================= WIP ==========================
-
+# TODO: Use MMLSpark UDFTransformer or as backup, SparkML
+# Transformer for train/val will be passed to PyTorchEstimator
+# Transformer for test will be immediately used in notebook
 # Data
 print('==> Preparing data..')
 
@@ -159,16 +160,31 @@ def _transform_row_test(cifar_row):
 transform_spec_train = TransformSpec(_transform_row_train)
 transform_spec_test = TransformSpec(_transform_row_test)
 
-for epoch in range(args.loop_epochs):
-    with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'image'), 
-                                transform_spec=transform_spec_train), 
-                    batch_size=args.train_batch_size) as trainloader:
-        train(epoch, trainloader)
 
-    with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 1, 'image'), 
-                                transform_spec=transform_spec_test), 
-                    batch_size=args.test_batch_size) as testloader:
-        test(epoch, testloader)
+# ==================== WIP: Try to save codeless PyTorch model ======================
+with mlflow.start_run() as run:
+# ==================== WIP: Try to save codeless PyTorch model ======================
+    for epoch in range(args.loop_epochs):
+        with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'image'), 
+                                    transform_spec=transform_spec_train), 
+                        batch_size=args.train_batch_size) as trainloader:
+            train(epoch, trainloader)
 
+        with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 1, 'image'), 
+                                    transform_spec=transform_spec_test), 
+                        batch_size=args.test_batch_size) as testloader:
+            test(epoch, testloader)
 
-# ========================= WIP ==========================
+    # ==================== WIP: Try to save codeless PyTorch model ======================
+    pytorch_index = "https://download.pytorch.org/whl/"
+    pytorch_version = "cpu/torch-1.1.0-cp36-cp36m-linux_x86_64.whl"
+    deps = [
+        "cloudpickle=={}".format(cloudpickle.__version__),
+        pytorch_index + pytorch_version,
+        "torchvision=={}".format(torchvision.__version__),
+        "Pillow=={}".format("6.0.0")
+    ]
+
+    model_env = _mlflow_conda_env(additional_pip_deps=deps)
+    mlflow.pytorch.save_model(net, args.output_dir, conda_env=model_env)
+    # ==================== WIP: Try to save codeless PyTorch model ======================

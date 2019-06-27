@@ -52,12 +52,11 @@ class PyTorchEstimator(Estimator):
 
     """
 
-    def __init__(self, workspace, clusterName, trainingScript, modelScript, modelName, nodeCount, modelPath, experimentName, unischema):
+    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, unischema):
         self.workspace = workspace
         self.clusterName = clusterName
         self.trainingScript = trainingScript
         self.modelScript = modelScript
-        self.modelName = modelName
         self.nodeCount = nodeCount
         self.modelPath = modelPath
         self.experimentName = experimentName
@@ -113,8 +112,6 @@ class PyTorchEstimator(Estimator):
         # Extract names of scripts from full path to pass as argument to PyTorch
         training_script_name = ntpath.basename(self.trainingScript)
 
-        print("{} model successfully imported!".format(self.modelName))
-
         # Create an experiment
         experiment = Experiment(self.workspace, name=self.experimentName)
 
@@ -128,7 +125,7 @@ class PyTorchEstimator(Estimator):
                             node_count=self.nodeCount,
                             distributed_training=MpiConfiguration(),
                             use_gpu=True,
-                            pip_packages=['pandas', 'opencv-python-headless', petastorm_pkg],
+                            pip_packages=['pandas', 'opencv-python-headless', petastorm_pkg, "azureml-mlflow", "Pillow==6.0.0"],
                             conda_packages=['opencv'])
 
         # Submit job
@@ -136,8 +133,7 @@ class PyTorchEstimator(Estimator):
         print("Job submitted!")
 
         # ======================= WIP ==========================
-        # TODO: Remove modelname and modelscript once the MLFlow Pytorch code-less model loading is tested
-        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.modelName, self.modelScript, self.unischema)
+        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.unischema)
         return fittedModel
 
         # ======================= WIP ==========================

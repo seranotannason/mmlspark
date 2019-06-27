@@ -10,6 +10,8 @@ from pyspark.ml.linalg import Vectors, VectorUDT
 import numpy as np
 from azureml.core import Run
 
+from mlflow.pytorch import load_model
+
 if sys.version >= '3':
     basestring = str
 
@@ -24,13 +26,11 @@ class PyTorchModel(Transformer):
 
     """
 
-    def __init__(self, runId, experiment, workspace, modelPath, modelName, modelScript, unischema):
+    def __init__(self, runId, experiment, workspace, modelPath, unischema):
         self.runId = runId
         self.experiment = experiment
         self.workspace = workspace
         self.modelPath = modelPath
-        self.modelName = modelName
-        self.modelScript = modelScript
         self.unischema = unischema
 
     def _transform(self, dataset):
@@ -45,19 +45,14 @@ class PyTorchModel(Transformer):
         if run.get_status() != 'Completed':
             raise ValueError('Run not completed.')
 
-        cloudPath = os.path.join(self.modelPath, 'model.pt')
-        localPath = os.path.join(os.getcwd(), 'model.pt')
-        run.download_file(cloudPath, localPath)
+        cloudPath = self.modelPath
+        localPath = os.path.join(os.getcwd(), self.modelPath)
+        run.download_files(cloudPath, os.getcwd())
 
-        # TODO: Revisit serialization
-        # Extract model class definition
-        spec = importlib.util.spec_from_file_location(self.modelName, self.modelScript)
-        foo = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(foo)
-        torchModel = getattr(foo, self.modelName)()
-
-        torchModel.load_state_dict(torch.load(localPath))
+        torchModel = load_model(localPath)
         torchModel.eval()
+
+        print("Trained model loaded.")
         # ======================= MIGRATED HERE ============================
 
         def transformData(data):
@@ -84,8 +79,8 @@ class PyTorchModel(Transformer):
             return outputVector
 
         # Transform input col
-        transformDataUDF = udf(transformData, VectorUDT())
-        dataset = dataset.withColumn(self.outputCol, transformDataUDF(self.inputCol))
+        # transformDataUDF = udf(transformData, VectorUDT())
+        # dataset = dataset.withColumn(self.outputCol, transformDataUDF(self.inputCol))
         return dataset
 
     def setInputCol(self, inputCol):
