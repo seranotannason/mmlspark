@@ -23,13 +23,13 @@ from azureml.core import Experiment
 from azureml.core.runconfig import MpiConfiguration
 from azureml.core.model import Model
 from azureml.widgets import RunDetails
-from petastorm.etl.dataset_metadata import materialize_dataset
+from petastorm.etl.dataset_metadata import materialize_dataset, infer_or_load_unischema
 from pyspark.ml import Estimator
 from pyspark.context import SparkContext
 from pyspark.sql.session import SparkSession
 from PyTorchModel import PyTorchModel
 import uuid
-
+import pyarrow
 
 sc = SparkContext.getOrCreate()
 spark = SparkSession(sc)
@@ -52,7 +52,7 @@ class PyTorchEstimator(Estimator):
 
     """
 
-    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, unischema):
+    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, unischema, preprocessor):
         self.workspace = workspace
         self.clusterName = clusterName
         self.trainingScript = trainingScript
@@ -61,6 +61,7 @@ class PyTorchEstimator(Estimator):
         self.modelPath = modelPath
         self.experimentName = experimentName
         self.unischema = unischema
+        self.preprocessor = preprocessor
 
     def _fit(self, dataset):
         """
@@ -68,6 +69,13 @@ class PyTorchEstimator(Estimator):
         :param dataset: input dataset, which is an instance of :py:class:`pyspark.sql.DataFrame`
         :returns: fitted model
         """
+        # ============================ WIP: GET UNISCHEMA FROM DATASET ==================================
+
+        pandas_dataset = dataset.toPandas()
+        pyarrow_schema = pyarrow.Schema.from_pandas(pandas_dataset)
+        self.unischema = infer_or_load_unischema
+
+        # ============================ WIP: GET UNISCHEMA FROM DATASET ==================================
         # Get datastore and compute target from workspace
         datastore = self.workspace.get_default_datastore()
         try:
@@ -133,7 +141,7 @@ class PyTorchEstimator(Estimator):
         print("Job submitted!")
 
         # ======================= WIP ==========================
-        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.unischema)
+        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.unischema, self.preprocessor)
         return fittedModel
 
         # ======================= WIP ==========================

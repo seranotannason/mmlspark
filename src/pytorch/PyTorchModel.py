@@ -15,6 +15,23 @@ from mlflow.pytorch import load_model
 if sys.version >= '3':
     basestring = str
 
+class PreTransformer:
+    def __init__(self, preprocessor, torchModel):
+        self.preprocessor = preprocessor
+        self.torchModel = torchModel
+
+        
+    def transformData(self, data):
+        print("transforming data...")
+        
+        dataTensor = self.preprocessor(data)
+        outputTensor = self.torchModel(dataTensor)
+
+        # Convert tensor back to vector
+        outputArray = outputTensor.detach().numpy().reshape(-1)
+        outputVector = Vectors.dense(outputArray)
+        return outputVector
+
 class PyTorchModel(Transformer):
     """
     ``PyTorchModel`` transforms one dataset into another.
@@ -26,19 +43,15 @@ class PyTorchModel(Transformer):
 
     """
 
-    def __init__(self, runId, experiment, workspace, modelPath, unischema):
+    def __init__(self, runId, experiment, workspace, modelPath, unischema, preprocessor):
         self.runId = runId
         self.experiment = experiment
         self.workspace = workspace
         self.modelPath = modelPath
         self.unischema = unischema
+        # self.preprocessor = preprocessor
+        
 
-    def _transform(self, dataset):
-        """
-        Transforms the input dataset.
-        :param dataset: input dataset, which is an instance of :py:class:`pyspark.sql.DataFrame`
-        :returns: transformed dataset
-        """
         # ======================= MIGRATED HERE ============================
         # Download PyTorch model from completed job
         run = Run(self.experiment, self.runId)
@@ -55,32 +68,19 @@ class PyTorchModel(Transformer):
         print("Trained model loaded.")
         # ======================= MIGRATED HERE ============================
 
-        def transformData(data):
-            # Decode data
-            codec = self.unischema.fields[self.inputCol].codec
-            decoded = codec.decode(self.unischema.fields[self.inputCol], data)
+        self.pretransformer = PreTransformer(preprocessor, torchModel)
 
-            print("TYPE OF DECODED: ", type(decoded))
-            
-            # Convert PySpark vector to NumPy array, then to Torch tensor
-            np_data = np.array(decoded_col)
-            # np_data = np.array(data)
-            
-            np_data = np_data.transpose([2, 0, 1])
-            dataTensor = torch.from_numpy(np_data).float()
-            dataTensor = dataTensor.unsqueeze(0)
-
-            # Transform the tensor
-            outputTensor = torchModel(dataTensor)
-
-            # Convert tensor back to vector
-            outputArray = outputTensor.detach().numpy().reshape(-1)
-            outputVector = Vectors.dense(outputArray)
-            return outputVector
+    def _transform(self, dataset):
+        """
+        Transforms the input dataset.
+        :param dataset: input dataset, which is an instance of :py:class:`pyspark.sql.DataFrame`
+        :returns: transformed dataset
+        """
 
         # Transform input col
-        # transformDataUDF = udf(transformData, VectorUDT())
-        # dataset = dataset.withColumn(self.outputCol, transformDataUDF(self.inputCol))
+
+        transformDataUDF = udf(self.pretransformer.transformData, VectorUDT())
+        dataset = dataset.withColumn(self.outputCol, transformDataUDF(self.inputCol))
         return dataset
 
     def setInputCol(self, inputCol):
@@ -90,4 +90,7 @@ class PyTorchModel(Transformer):
     def setOutputCol(self, outputCol):
         self.outputCol = outputCol
         return self
+
+    def setPreprocessor(self, preprocessor):
+        self.preprocessor = preprocessor
 
