@@ -9,6 +9,7 @@ from PyTorchEstimator import PyTorchEstimator
 from azureml.core.workspace import Workspace
 from pyspark.context import SparkContext
 from pyspark.sql.session import SparkSession
+from pyspark.sql.functions import udf
 
 sc = SparkContext.getOrCreate()
 spark = SparkSession(sc)
@@ -58,7 +59,6 @@ rows_rdd = sc.parallelize(image_zip) \
     
 imagesWithLabels = spark.createDataFrame(rows_rdd)
 
-
 # In[6]:
 
 
@@ -95,3 +95,31 @@ estimator = PyTorchEstimator(workspace, clusterName, trainingScript, modelScript
 
 model = estimator.fit(train)
 
+
+# In[]:
+scoredImages = model.setInputCol("image").setOutputCol("scored") \
+                    .transform(test)
+
+scoredImages.printSchema()
+scoredImages.show(3)
+
+# In[]:
+
+# Transform the log probabilities to predictions
+def argmax(x):
+    return max(enumerate(x),key=lambda p: p[1])[0]
+
+argmaxUDF = udf(argmax, IntegerType())
+imagePredictions = scoredImages.withColumn("prediction", argmaxUDF("scored"))\
+                               .withColumn("label", argmaxUDF("label")) \
+                               .select("prediction", "label")
+
+predictions = np.array(imagePredictions.select("prediction").collect()).reshape(-1)
+labels = np.array(imagePredictions.select("label").collect()).reshape(-1)
+
+print("Predictions shape: {} Labels shape: {}".format(predictions.shape, labels.shape))
+
+correct = np.count_nonzero(predictions == labels)
+total = predictions.shape[0]
+
+print("Accuracy: {}% [{}/{}]".format(100. * correct/total, correct, total))

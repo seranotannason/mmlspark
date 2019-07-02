@@ -22,12 +22,13 @@ from petastorm.predicates import in_pseudorandom_split
 
 from pytorch_net import ResNet18
 
-# ==================== WIP: Try to save codeless PyTorch model ======================
 import mlflow
 import mlflow.pytorch
 from mlflow.utils.environment import _mlflow_conda_env
 import cloudpickle
-# ==================== WIP: Try to save codeless PyTorch model ======================
+
+import cv2
+import numpy as np
 
 # Get the Azure ML run object
 from azureml.core.run import Run
@@ -132,7 +133,10 @@ def test(epoch, testloader):
 print('==> Preparing data..')
 
 def _transform_row_train(cifar_row):
+    image = cv2.imdecode(np.frombuffer(cifar_row['image'], dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+
     transform_train = transforms.Compose([
+        transforms.ToPILImage(),
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
@@ -140,19 +144,21 @@ def _transform_row_train(cifar_row):
     ])
 
     result_row = {
-        'image': transform_train(transforms.ToPILImage()(cifar_row['image'])),
+        'image': transform_train(image),
         'label': cifar_row['label']
     }
     return result_row
 
 def _transform_row_test(cifar_row):
+    image = cv2.imdecode(np.frombuffer(cifar_row['image'], dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+
     transform_test = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
     
     result_row = {
-        'image': transform_test(transforms.ToPILImage()(cifar_row['image'])),
+        'image': transform_test(image),
         'label': cifar_row['label']
     }  
     return result_row

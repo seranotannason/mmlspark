@@ -10,7 +10,6 @@ if sys.version >= '3':
 
 import os
 import shutil
-import torch
 import ntpath
 import importlib.util
 from azureml.core.compute import ComputeTarget, AmlCompute
@@ -48,11 +47,10 @@ class PyTorchEstimator(Estimator):
         nodeCount (int): Number of nodes to train on
         modelPath (str): Cloud path that the model will be saved to, relative to /outputs dir
         experimentName (str): Name of current experiment
-        unischema (Unischema): Unischema of Petastorm dataset
 
     """
 
-    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, unischema, preprocessor):
+    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, preprocessor):
         self.workspace = workspace
         self.clusterName = clusterName
         self.trainingScript = trainingScript
@@ -60,7 +58,6 @@ class PyTorchEstimator(Estimator):
         self.nodeCount = nodeCount
         self.modelPath = modelPath
         self.experimentName = experimentName
-        self.unischema = unischema
         self.preprocessor = preprocessor
 
     def _fit(self, dataset):
@@ -72,10 +69,78 @@ class PyTorchEstimator(Estimator):
         # ============================ WIP: GET UNISCHEMA FROM DATASET ==================================
 
         pandas_dataset = dataset.toPandas()
-        pyarrow_schema = pyarrow.Schema.from_pandas(pandas_dataset)
-        self.unischema = infer_or_load_unischema
+        arrow_schema = pyarrow.Schema.from_pandas(pandas_dataset)
+
+        import numpy as np
+        from petastorm.codecs import ScalarCodec
+        from pyspark.sql.types import StringType, ShortType, LongType, IntegerType, BooleanType, DoubleType, \
+            ByteType, \
+            FloatType, DecimalType, DateType, TimestampType
+        from decimal import Decimal
+        from pyspark.sql.types import StructField, StructType
+        def _numpy_and_codec_from_arrow_type(field_type):
+            from pyarrow import types
+
+            if types.is_int8(field_type):
+                np_type = np.int8
+                codec = ScalarCodec(ByteType())
+            elif types.is_int16(field_type):
+                np_type = np.int16
+                codec = ScalarCodec(ShortType())
+            elif types.is_int32(field_type):
+                np_type = np.int32
+                codec = ScalarCodec(IntegerType())
+            elif types.is_int64(field_type):
+                np_type = np.int64
+                codec = ScalarCodec(LongType())
+            elif types.is_string(field_type):
+                np_type = np.unicode_
+                codec = ScalarCodec(StringType())
+            elif types.is_boolean(field_type):
+                np_type = np.bool_
+                codec = ScalarCodec(BooleanType())
+            elif types.is_float32(field_type):
+                np_type = np.float32
+                codec = ScalarCodec(FloatType())
+            elif types.is_float64(field_type):
+                np_type = np.float64
+                codec = ScalarCodec(DoubleType())
+            elif types.is_decimal(field_type):
+                np_type = Decimal
+                codec = ScalarCodec(DecimalType(field_type.precision, field_type.scale))
+            elif types.is_binary(field_type):
+                codec = ScalarCodec(StringType())
+                np_type = np.string_
+            elif types.is_fixed_size_binary(field_type):
+                codec = ScalarCodec(StringType())
+                np_type = np.string_
+            elif types.is_date(field_type):
+                np_type = np.datetime64
+                codec = ScalarCodec(DateType())
+            elif types.is_timestamp(field_type):
+                np_type = np.datetime64
+                codec = ScalarCodec(TimestampType())
+            elif types.is_list(field_type):
+                _, np_type = _numpy_and_codec_from_arrow_type(field_type.value_type)
+                codec = None
+            else:
+                raise ValueError('Cannot auto-create unischema due to unsupported column type {}'.format(field_type))
+            return codec, np_type
+        
+        # Create Unischema
+        from petastorm.unischema import Unischema, UnischemaField    
+        unischema_fields = []
+        for column_name in arrow_schema.names:
+            arrow_field = arrow_schema.field_by_name(column_name)
+            field_type = arrow_field.type
+            codec, np_type = _numpy_and_codec_from_arrow_type(field_type)
+            unischema_fields.append(UnischemaField(column_name, np_type, (), codec, arrow_field.nullable))
+        self.unischema = Unischema('inferred_schema', unischema_fields)
+        print(self.unischema)
+
 
         # ============================ WIP: GET UNISCHEMA FROM DATASET ==================================
+
         # Get datastore and compute target from workspace
         datastore = self.workspace.get_default_datastore()
         try:
@@ -141,7 +206,7 @@ class PyTorchEstimator(Estimator):
         print("Job submitted!")
 
         # ======================= WIP ==========================
-        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.unischema, self.preprocessor)
+        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.preprocessor)
         return fittedModel
 
         # ======================= WIP ==========================
