@@ -46,9 +46,8 @@ parser.add_argument('--log-interval', type=int, default=10, metavar='N',
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-best_acc = 0  # best test accuracy
-start_epoch = 0  # start from epoch 0 or last checkpoint epoch
-
+best_acc = 0
+best_model_path = ''
 
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
@@ -95,6 +94,7 @@ def train(epoch, trainloader):
 
 def test(epoch, testloader):
     global best_acc
+    global best_model_path
     net.eval()
     test_loss = 0
     correct = 0
@@ -125,11 +125,21 @@ def test(epoch, testloader):
         # os.makedirs(args.output_dir, exist_ok=True)
         # torch.save(net.state_dict(), os.path.join(args.output_dir, 'model.pt'))
 
+        # ==================== WIP: Try to save codeless PyTorch model ======================
+        pytorch_index = "https://download.pytorch.org/whl/"
+        pytorch_version = "cpu/torch-1.1.0-cp36-cp36m-linux_x86_64.whl"
+        deps = [
+            "cloudpickle=={}".format(cloudpickle.__version__),
+            pytorch_index + pytorch_version,
+            "torchvision=={}".format(torchvision.__version__),
+            "Pillow=={}".format("6.0.0")
+        ]
 
-# TODO: Use MMLSpark UDFTransformer or as backup, SparkML
-# Transformer for train/val will be passed to PyTorchEstimator
-# Transformer for test will be immediately used in notebook
-# Data
+        model_env = _mlflow_conda_env(additional_pip_deps=deps)
+        mlflow.pytorch.save_model(net, args.output_dir + str(epoch), conda_env=model_env)
+        best_model_path = args.output_dir + str(epoch)
+        # ==================== WIP: Try to save codeless PyTorch model ======================
+
 print('==> Preparing data..')
 
 def _transform_row_train(cifar_row):
@@ -166,9 +176,8 @@ def _transform_row_test(cifar_row):
 transform_spec_train = TransformSpec(_transform_row_train)
 transform_spec_test = TransformSpec(_transform_row_test)
 
-
 # ==================== WIP: Try to save codeless PyTorch model ======================
-with mlflow.start_run() as run:
+with mlflow.start_run() as mlflow_run:
 # ==================== WIP: Try to save codeless PyTorch model ======================
     for epoch in range(args.loop_epochs):
         with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'image'), 
@@ -181,16 +190,5 @@ with mlflow.start_run() as run:
                         batch_size=args.test_batch_size) as testloader:
             test(epoch, testloader)
 
-    # ==================== WIP: Try to save codeless PyTorch model ======================
-    pytorch_index = "https://download.pytorch.org/whl/"
-    pytorch_version = "cpu/torch-1.1.0-cp36-cp36m-linux_x86_64.whl"
-    deps = [
-        "cloudpickle=={}".format(cloudpickle.__version__),
-        pytorch_index + pytorch_version,
-        "torchvision=={}".format(torchvision.__version__),
-        "Pillow=={}".format("6.0.0")
-    ]
-
-    model_env = _mlflow_conda_env(additional_pip_deps=deps)
-    mlflow.pytorch.save_model(net, args.output_dir, conda_env=model_env)
-    # ==================== WIP: Try to save codeless PyTorch model ======================
+    print('==> Saving best model...')
+    aml_run.upload_folder(args.output_dir, best_model_path)
