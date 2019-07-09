@@ -19,6 +19,8 @@ from azureml.data.azure_storage_datastore import AzureFileDatastore, AzureBlobDa
 from azureml.train.dnn import PyTorch
 from azureml.core.workspace import Workspace
 from azureml.core import Experiment
+from azureml.core import ScriptRunConfig
+from azureml.core.runconfig import DataReferenceConfiguration
 from azureml.core.runconfig import MpiConfiguration
 from azureml.core.model import Model
 from azureml.widgets import RunDetails
@@ -50,7 +52,7 @@ class PyTorchEstimator(Estimator):
 
     """
 
-    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, preprocessor):
+    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, preprocessor, environment):
         self.workspace = workspace
         self.clusterName = clusterName
         self.trainingScript = trainingScript
@@ -59,6 +61,7 @@ class PyTorchEstimator(Estimator):
         self.modelPath = modelPath
         self.experimentName = experimentName
         self.preprocessor = preprocessor
+        self.environment = environment
 
     def _fit(self, dataset):
         """
@@ -170,7 +173,7 @@ class PyTorchEstimator(Estimator):
         # path_on_datastore = 'tmp/data/dataset.parquet'
         ds_data = datastore.path(datastore_path)
 
-        # Train on remote compute
+        # Arguments to training script
         script_params = {
             '--input_data': ds_data,
             '--output_dir': self.modelPath
@@ -188,26 +191,53 @@ class PyTorchEstimator(Estimator):
         # Create an experiment
         experiment = Experiment(self.workspace, name=self.experimentName)
 
-        # Create a PyTorch estimator
-        # TODO: Lighten the burden on user to manually specify pip packages
-        petastorm_pkg = CondaDependencies._register_private_pip_wheel_to_blob(self.workspace, '/home/azureuser/serano-petastorm/dist/petastorm-0.9.0.dev0-py2.py3-none-any.whl')
-        estimator = PyTorch(source_directory=project_folder,
-                            compute_target=compute_target,
-                            entry_script=training_script_name,
-                            script_params=script_params,
-                            node_count=self.nodeCount,
-                            distributed_training=MpiConfiguration(),
-                            use_gpu=True,
-                            pip_packages=['pandas', 'opencv-python-headless', petastorm_pkg, "azureml-mlflow", "Pillow==6.0.0"],
-                            conda_packages=['opencv'])
+        # ================================= WIP: Replacing PyTorch with RunConfig ===================================
+        # Arguments to training script
+        script_params = [
+            '--input_data', str(ds_data),
+            '--output_dir', self.modelPath
+        ]
 
-        # Submit job
-        run = experiment.submit(estimator)
+        runconfig = ScriptRunConfig(source_directory=project_folder, script=training_script_name, arguments=script_params)
+        runconfig.run_config.target = self.clusterName
+        runconfig.run_config.environment = self.environment
+        runconfig.run_config.environment.docker.base_image = "mcr.microsoft.com/azureml/base-gpu:openmpi3.1.2-cuda10.0-cudnn7-ubuntu16.04"
+        runconfig.run_config.environment.docker.enabled = True
+        runconfig.run_config.environment.docker.gpu_support = True
+        runconfig.run_config.environment.environment_variables = {
+            "EXAMPLE_ENV_VAR": "EXAMPLE_VALUE",
+            "NCCL_IB_DISABLE": "1",
+            "NCCL_SOCKET_IFNAME": "eth0",
+            "NCCL_TREE_THRESHOLD": "0",
+        }
+        runconfig.run_config.node_count = self.nodeCount
+        runconfig.run_config.mpi = MpiConfiguration()
+        runconfig.run_config.communicator = "Mpi"
+        runconfig.run_config.data_references = {
+            ds_data.data_reference_name: DataReferenceConfiguration(datastore_name=ds_data.datastore.name, 
+                mode='mount', path_on_datastore=ds_data.path_on_datastore, 
+                path_on_compute=ds_data.path_on_compute, overwrite=ds_data.overwrite) 
+        }
+        run = experiment.submit(config=runconfig)
+
+        # # Create a PyTorch estimator
+        # # TODO: Lighten the burden on user to manually specify pip packages
+        # petastorm_pkg = CondaDependencies._register_private_pip_wheel_to_blob(self.workspace, '/home/azureuser/serano-petastorm/dist/petastorm-0.9.0.dev0-py2.py3-none-any.whl')
+        # estimator = PyTorch(source_directory=project_folder,
+        #                     compute_target=compute_target,
+        #                     entry_script=training_script_name,
+        #                     script_params=script_params,
+        #                     node_count=self.nodeCount,
+        #                     distributed_training=MpiConfiguration(),
+        #                     use_gpu=True,
+        #                     pip_packages=['pandas', 'opencv-python-headless', petastorm_pkg, "azureml-mlflow", "Pillow==6.0.0"],
+        #                     conda_packages=['opencv'])
+
+        # # Submit job
+        # run = experiment.submit(estimator)
+
         print("Job submitted!")
+        # ================================= WIP: Replacing PyTorch with RunConfig ===================================
 
-        # ======================= WIP ==========================
         fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.preprocessor)
         return fittedModel
-
-        # ======================= WIP ==========================
-
