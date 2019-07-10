@@ -3,45 +3,41 @@
 # Adapted from https://github.com/kuangliu/pytorch-cifar/blob/master/main.py
 
 '''Train CIFAR10 with PyTorch.'''
+from pytorch_net import ResNet18
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
-
 import torchvision
 import torchvision.transforms as transforms
 
 import os
+import sys
 import argparse
+import cv2
+import numpy as np
 import pandas as pd
 
 from petastorm.pytorch import DataLoader
 from petastorm import make_reader, TransformSpec
 from petastorm.predicates import in_pseudorandom_split
 
-from pytorch_net import ResNet18
-
 import mlflow
 import mlflow.pytorch
 from mlflow.utils.environment import _mlflow_conda_env
 import cloudpickle
-
-import cv2
-import numpy as np
 
 # Get the Azure ML run object
 from azureml.core.run import Run
 aml_run = Run.get_context()
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
-parser.add_argument('--lr', default=0.01, type=float, help='learning rate')
-parser.add_argument('--loop_epochs', default=2, type=float, help='number of epochs')
-parser.add_argument('--train_batch_size', default=128, type=int, help='batch size for training')
-parser.add_argument('--test_batch_size', default=100, type=int, help='batch size for testing')
-parser.add_argument('--input_data', type=str, help='training data')
 parser.add_argument('--output_dir', type=str, help='output directory')
-parser.add_argument('--log-interval', type=int, default=10, metavar='N',
+parser.add_argument('--lr', default=0.01, type=float, help='learning rate')
+parser.add_argument('--loop_epochs', default=2, type=int, help='number of epochs')
+parser.add_argument('--log_interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
 args = parser.parse_args()
 
@@ -100,7 +96,7 @@ def test(epoch, testloader):
     correct = 0
     total = 0
     with torch.no_grad():
-        for batch_idx, sample_batched in enumerate(testloader):
+        for _, sample_batched in enumerate(testloader):
             inputs = sample_batched['image'].float().to(device)
             targets = sample_batched['label'].to(device)
             outputs = net(inputs)
@@ -121,11 +117,7 @@ def test(epoch, testloader):
     acc = 100. * correct/total
     if acc > best_acc:
         best_acc = acc
-        # print('Saving..')
-        # os.makedirs(args.output_dir, exist_ok=True)
-        # torch.save(net.state_dict(), os.path.join(args.output_dir, 'model.pt'))
-
-        # ==================== WIP: Try to save codeless PyTorch model ======================
+        
         pytorch_index = "https://download.pytorch.org/whl/"
         pytorch_version = "cpu/torch-1.1.0-cp36-cp36m-linux_x86_64.whl"
         deps = [
@@ -138,57 +130,24 @@ def test(epoch, testloader):
         model_env = _mlflow_conda_env(additional_pip_deps=deps)
         mlflow.pytorch.save_model(net, args.output_dir + str(epoch), conda_env=model_env)
         best_model_path = args.output_dir + str(epoch)
-        # ==================== WIP: Try to save codeless PyTorch model ======================
 
 print('==> Preparing data..')
 
-def _transform_row_train(cifar_row):
-    image = cv2.imdecode(np.frombuffer(cifar_row['image'], dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-
-    transform_train = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
-
-    result_row = {
-        'image': transform_train(image),
-        'label': cifar_row['label']
-    }
-    return result_row
-
-def _transform_row_test(cifar_row):
-    image = cv2.imdecode(np.frombuffer(cifar_row['image'], dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-
-    transform_test = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
-    
-    result_row = {
-        'image': transform_test(image),
-        'label': cifar_row['label']
-    }  
-    return result_row
-
-transform_spec_train = TransformSpec(_transform_row_train)
-transform_spec_test = TransformSpec(_transform_row_test)
-
-# ==================== WIP: Try to save codeless PyTorch model ======================
+# ================================ WIP: Moving to wrapper ================================
 with mlflow.start_run() as mlflow_run:
-# ==================== WIP: Try to save codeless PyTorch model ======================
     for epoch in range(args.loop_epochs):
-        with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'image'), 
-                                    transform_spec=transform_spec_train), 
-                        batch_size=args.train_batch_size) as trainloader:
-            train(epoch, trainloader)
+        # with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'image'), 
+        #                             transform_spec=transform_spec_train), 
+        #                 batch_size=args.train_batch_size) as trainloader:
+        train(epoch, trainloader)
+        trainloader.reader.reset()
 
-        with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 1, 'image'), 
-                                    transform_spec=transform_spec_test), 
-                        batch_size=args.test_batch_size) as testloader:
-            test(epoch, testloader)
+        # with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 1, 'image'), 
+        #                             transform_spec=transform_spec_test), 
+        #                 batch_size=args.test_batch_size) as testloader:
+        test(epoch, testloader)
+        testloader.reader.reset()
+# ================================ WIP: Moving to wrapper ================================
 
     print('==> Saving best model...')
     aml_run.upload_folder(args.output_dir, best_model_path)

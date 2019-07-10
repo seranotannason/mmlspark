@@ -12,6 +12,8 @@ import os
 import shutil
 import ntpath
 import importlib.util
+from functools import reduce
+
 from azureml.core.compute import ComputeTarget, AmlCompute
 from azureml.core.compute_target import ComputeTargetException
 from azureml.core.conda_dependencies import CondaDependencies
@@ -24,11 +26,13 @@ from azureml.core.runconfig import DataReferenceConfiguration
 from azureml.core.runconfig import MpiConfiguration
 from azureml.core.model import Model
 from azureml.widgets import RunDetails
+
 from petastorm.etl.dataset_metadata import materialize_dataset, infer_or_load_unischema
 from pyspark.ml import Estimator
 from pyspark.context import SparkContext
 from pyspark.sql.session import SparkSession
 from PyTorchModel import PyTorchModel
+
 import uuid
 import pyarrow
 
@@ -52,7 +56,8 @@ class PyTorchEstimator(Estimator):
 
     """
 
-    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, preprocessor, environment):
+    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, preprocessor, environment,
+                    train_data_percentage, train_batch_size, test_batch_size, feature_column, user_defined_args):
         self.workspace = workspace
         self.clusterName = clusterName
         self.trainingScript = trainingScript
@@ -62,6 +67,12 @@ class PyTorchEstimator(Estimator):
         self.experimentName = experimentName
         self.preprocessor = preprocessor
         self.environment = environment
+        self.train_data_percentage = train_data_percentage
+        self.train_batch_size = train_batch_size
+        self.test_batch_size = test_batch_size
+        self.feature_column = feature_column
+        # Convert dictionary to list
+        self.user_defined_args = list(reduce(lambda x, y: x + y, user_defined_args.items()))
 
     def _fit(self, dataset):
         """
@@ -139,7 +150,7 @@ class PyTorchEstimator(Estimator):
             codec, np_type = _numpy_and_codec_from_arrow_type(field_type)
             unischema_fields.append(UnischemaField(column_name, np_type, (), codec, arrow_field.nullable))
         self.unischema = Unischema('inferred_schema', unischema_fields)
-        print(self.unischema)
+        print("Inferred unischema: ", self.unischema)
 
 
         # ============================ WIP: GET UNISCHEMA FROM DATASET ==================================
@@ -173,17 +184,12 @@ class PyTorchEstimator(Estimator):
         # path_on_datastore = 'tmp/data/dataset.parquet'
         ds_data = datastore.path(datastore_path)
 
-        # Arguments to training script
-        script_params = {
-            '--input_data': ds_data,
-            '--output_dir': self.modelPath
-        }
-
         # Create a project directory
         project_folder = './pytorch-train'
         os.makedirs(project_folder, exist_ok=True)
         shutil.copy(self.trainingScript, project_folder)
         shutil.copy(self.modelScript, project_folder)
+        shutil.copy('/home/azureuser/mmlspark/src/pytorch/wrapper.py', project_folder)
 
         # Extract names of scripts from full path to pass as argument to PyTorch
         training_script_name = ntpath.basename(self.trainingScript)
@@ -191,14 +197,22 @@ class PyTorchEstimator(Estimator):
         # Create an experiment
         experiment = Experiment(self.workspace, name=self.experimentName)
 
-        # ================================= WIP: Replacing PyTorch with RunConfig ===================================
         # Arguments to training script
         script_params = [
             '--input_data', str(ds_data),
-            '--output_dir', self.modelPath
+            '--output_dir', self.modelPath,
+            '--train_data_percentage', self.train_data_percentage,
+            '--train_batch_size', self.train_batch_size,
+            '--test_batch_size', self.test_batch_size,
+            '--feature_column', self.feature_column,
+            '--training_script', training_script_name
         ]
+        
+        print("User defined args: ", self.user_defined_args)
+        script_params.extend(self.user_defined_args)
+        print("Script_params: ", script_params)
 
-        runconfig = ScriptRunConfig(source_directory=project_folder, script=training_script_name, arguments=script_params)
+        runconfig = ScriptRunConfig(source_directory=project_folder, script='wrapper.py', arguments=script_params)
         runconfig.run_config.target = self.clusterName
         runconfig.run_config.environment = self.environment
         runconfig.run_config.environment.docker.base_image = "mcr.microsoft.com/azureml/base-gpu:openmpi3.1.2-cuda10.0-cudnn7-ubuntu16.04"
@@ -218,26 +232,9 @@ class PyTorchEstimator(Estimator):
                 mode='mount', path_on_datastore=ds_data.path_on_datastore, 
                 path_on_compute=ds_data.path_on_compute, overwrite=ds_data.overwrite) 
         }
+
         run = experiment.submit(config=runconfig)
-
-        # # Create a PyTorch estimator
-        # # TODO: Lighten the burden on user to manually specify pip packages
-        # petastorm_pkg = CondaDependencies._register_private_pip_wheel_to_blob(self.workspace, '/home/azureuser/serano-petastorm/dist/petastorm-0.9.0.dev0-py2.py3-none-any.whl')
-        # estimator = PyTorch(source_directory=project_folder,
-        #                     compute_target=compute_target,
-        #                     entry_script=training_script_name,
-        #                     script_params=script_params,
-        #                     node_count=self.nodeCount,
-        #                     distributed_training=MpiConfiguration(),
-        #                     use_gpu=True,
-        #                     pip_packages=['pandas', 'opencv-python-headless', petastorm_pkg, "azureml-mlflow", "Pillow==6.0.0"],
-        #                     conda_packages=['opencv'])
-
-        # # Submit job
-        # run = experiment.submit(estimator)
-
         print("Job submitted!")
-        # ================================= WIP: Replacing PyTorch with RunConfig ===================================
 
         fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.preprocessor)
         return fittedModel
