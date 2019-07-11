@@ -29,14 +29,14 @@ import mlflow.pytorch
 from mlflow.utils.environment import _mlflow_conda_env
 import cloudpickle
 
-# Get the Azure ML run object
 from azureml.core.run import Run
+
+# ====================== WIP: Global variables in a module =========================
 aml_run = Run.get_context()
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--output_dir', type=str, help='output directory')
 parser.add_argument('--lr', default=0.01, type=float, help='learning rate')
-parser.add_argument('--loop_epochs', default=2, type=int, help='number of epochs')
 parser.add_argument('--log_interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
 args = parser.parse_args()
@@ -58,8 +58,9 @@ if device == 'cuda':
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+# ====================== WIP: Global variables in a module =========================
 
-# Training
+
 def train(epoch, trainloader):
     print('\nEpoch: %d' % epoch)
     net.train()
@@ -108,8 +109,8 @@ def test(epoch, testloader):
             correct += predicted.eq(targets).sum().item()
 
     test_loss /= total
-    print("Total samples in testset: {}".format(total))
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+    print("Total samples in testset: {}\n".format(total))
+    print("Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n".format(
         test_loss, correct, total,
         100. * correct / total))
     
@@ -130,24 +131,18 @@ def test(epoch, testloader):
         model_env = _mlflow_conda_env(additional_pip_deps=deps)
         mlflow.pytorch.save_model(net, args.output_dir + str(epoch), conda_env=model_env)
         best_model_path = args.output_dir + str(epoch)
+        
 
-print('==> Preparing data..')
+if __name__ == "__main__":
+    # ====================== WIP: Global variables in a module =========================
+    with mlflow.start_run() as mlflow_run:
+        for epoch in range(args.loop_epochs):
+            train(epoch, trainloader)
+            trainloader.reader.reset()
 
-# ================================ WIP: Moving to wrapper ================================
-with mlflow.start_run() as mlflow_run:
-    for epoch in range(args.loop_epochs):
-        # with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 0, 'image'), 
-        #                             transform_spec=transform_spec_train), 
-        #                 batch_size=args.train_batch_size) as trainloader:
-        train(epoch, trainloader)
-        trainloader.reader.reset()
+            test(epoch, testloader)
+            testloader.reader.reset()
 
-        # with DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([0.75, 0.25], 1, 'image'), 
-        #                             transform_spec=transform_spec_test), 
-        #                 batch_size=args.test_batch_size) as testloader:
-        test(epoch, testloader)
-        testloader.reader.reset()
-# ================================ WIP: Moving to wrapper ================================
-
-    print('==> Saving best model...')
-    aml_run.upload_folder(args.output_dir, best_model_path)
+        print('==> Saving best model...')
+        aml_run.upload_folder(args.output_dir, best_model_path)
+    # ====================== WIP: Global variables in a module =========================
