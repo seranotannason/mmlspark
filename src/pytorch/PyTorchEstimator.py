@@ -8,11 +8,16 @@ import sys
 if sys.version >= '3':
     basestring = str
 
+from PyTorchModel import PyTorchModel
+
 import os
 import shutil
 import ntpath
 import importlib.util
+import uuid
+import pyarrow
 from functools import reduce
+from petastorm.etl.dataset_metadata import materialize_dataset, infer_or_load_unischema
 
 from azureml.core.compute import ComputeTarget, AmlCompute
 from azureml.core.compute_target import ComputeTargetException
@@ -27,14 +32,10 @@ from azureml.core.runconfig import MpiConfiguration
 from azureml.core.model import Model
 from azureml.widgets import RunDetails
 
-from petastorm.etl.dataset_metadata import materialize_dataset, infer_or_load_unischema
 from pyspark.ml import Estimator
 from pyspark.context import SparkContext
 from pyspark.sql.session import SparkSession
-from PyTorchModel import PyTorchModel
 
-import uuid
-import pyarrow
 
 sc = SparkContext.getOrCreate()
 spark = SparkSession(sc)
@@ -57,7 +58,7 @@ class PyTorchEstimator(Estimator):
     """
 
     def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, preprocessor, environment,
-                    train_data_percentage, train_batch_size, test_batch_size, feature_column, user_defined_args):
+                    train_data_percentage, train_batch_size, test_batch_size, loop_epochs, feature_column, user_defined_args, is_managed):
         self.workspace = workspace
         self.clusterName = clusterName
         self.trainingScript = trainingScript
@@ -70,18 +71,14 @@ class PyTorchEstimator(Estimator):
         self.train_data_percentage = train_data_percentage
         self.train_batch_size = train_batch_size
         self.test_batch_size = test_batch_size
+        self.loop_epochs = loop_epochs
         self.feature_column = feature_column
         # Convert dictionary to list
         self.user_defined_args = list(reduce(lambda x, y: x + y, user_defined_args.items()))
-
-    def _fit(self, dataset):
-        """
-        Fits a model to the input dataset. This is called by the default implementation of fit.
-        :param dataset: input dataset, which is an instance of :py:class:`pyspark.sql.DataFrame`
-        :returns: fitted model
-        """
+        self.is_managed = is_managed
+    
+    def _infer_unischema(self, dataset):
         # ============================ WIP: GET UNISCHEMA FROM DATASET ==================================
-
         pandas_dataset = dataset.toPandas()
         arrow_schema = pyarrow.Schema.from_pandas(pandas_dataset)
 
@@ -149,14 +146,11 @@ class PyTorchEstimator(Estimator):
             field_type = arrow_field.type
             codec, np_type = _numpy_and_codec_from_arrow_type(field_type)
             unischema_fields.append(UnischemaField(column_name, np_type, (), codec, arrow_field.nullable))
-        self.unischema = Unischema('inferred_schema', unischema_fields)
-        print("Inferred unischema: ", self.unischema)
-
-
+        
+        return Unischema('inferred_schema', unischema_fields)
         # ============================ WIP: GET UNISCHEMA FROM DATASET ==================================
 
-        # Get datastore and compute target from workspace
-        datastore = self.workspace.get_default_datastore()
+    def _get_or_create_compute_target(self):
         try:
             compute_target = ComputeTarget(workspace=self.workspace, name=self.clusterName)
             print('Found existing compute target.')
@@ -169,11 +163,13 @@ class PyTorchEstimator(Estimator):
             compute_target = ComputeTarget.create(self.workspace, self.clusterName, compute_config)
             compute_target.wait_for_completion(show_output=True)
 
-        # Upload dataset to datastore
+        return compute_target
+
+    def _upload_dataset_to_datastore(self, dataset, datastore, unischema):
         local_path = 'file:///tmp/dataset'
         datastore_path = 'data/dataset' + str(uuid.uuid4())
         # TODO: wasb 
-        with materialize_dataset(spark, local_path, self.unischema):
+        with materialize_dataset(spark, local_path, unischema):
             dataset.coalesce(10) \
                 .write \
                 .mode('overwrite') \
@@ -181,9 +177,57 @@ class PyTorchEstimator(Estimator):
         datastore.upload(src_dir='/tmp/dataset', target_path=datastore_path, overwrite=True, show_progress=True)
 
         # Get dataset path on datastore
-        # path_on_datastore = 'tmp/data/dataset.parquet'
         ds_data = datastore.path(datastore_path)
+        return ds_data
 
+    def _create_script_params(self, ds_data):
+        # Extract names of scripts from full path to pass as argument to PyTorch
+        training_script_name = ntpath.basename(self.trainingScript)
+
+        script_params = [
+            '--input_data', str(ds_data),
+            '--output_dir', self.modelPath,
+            '--train_data_percentage', self.train_data_percentage,
+            '--train_batch_size', self.train_batch_size,
+            '--test_batch_size', self.test_batch_size,
+            '--loop_epochs', self.loop_epochs,
+            '--feature_column', self.feature_column,
+            '--training_script', training_script_name,
+            '--is_managed', self.is_managed
+        ]
+        script_params.extend(self.user_defined_args)
+
+        return script_params
+
+    def _create_script_run_config(self, ds_data, project_folder, script_params):
+        script_run_config = ScriptRunConfig(source_directory=project_folder, script='wrapper.py', arguments=script_params)
+        script_run_config.run_config.target = self.clusterName
+        script_run_config.run_config.environment = self.environment
+        script_run_config.run_config.environment.docker.base_image = "mcr.microsoft.com/azureml/base-gpu:openmpi3.1.2-cuda10.0-cudnn7-ubuntu16.04"
+        script_run_config.run_config.environment.docker.enabled = True
+        script_run_config.run_config.environment.docker.gpu_support = True
+        # TODO: Add to dictionary if the user gives a boolean flag. usually users only wanna modify env vars
+        script_run_config.run_config.environment.environment_variables = {
+            "NCCL_IB_DISABLE": "1",
+            "NCCL_SOCKET_IFNAME": "eth0",
+            "NCCL_TREE_THRESHOLD": "0",
+        }
+        script_run_config.run_config.node_count = self.nodeCount
+        script_run_config.run_config.mpi = MpiConfiguration()
+        script_run_config.run_config.communicator = "Mpi"
+        script_run_config.run_config.data_references = {
+            ds_data.data_reference_name: DataReferenceConfiguration(datastore_name=ds_data.datastore.name, 
+                mode='mount', path_on_datastore=ds_data.path_on_datastore, 
+                path_on_compute=ds_data.path_on_compute, overwrite=ds_data.overwrite) 
+        }
+        return script_run_config
+
+    def _fit(self, dataset):
+        """
+        Fits a model to the input dataset. This is called by the default implementation of fit.
+        :param dataset: input dataset, which is an instance of :py:class:`pyspark.sql.DataFrame`
+        :returns: fitted model
+        """
         # Create a project directory
         project_folder = './pytorch-train'
         os.makedirs(project_folder, exist_ok=True)
@@ -191,48 +235,14 @@ class PyTorchEstimator(Estimator):
         shutil.copy(self.modelScript, project_folder)
         shutil.copy('/home/azureuser/mmlspark/src/pytorch/wrapper.py', project_folder)
 
-        # Extract names of scripts from full path to pass as argument to PyTorch
-        training_script_name = ntpath.basename(self.trainingScript)
+        unischema = self._infer_unischema(dataset)
+        datastore = self.workspace.get_default_datastore()
+        compute_target = self._get_or_create_compute_target()
+        ds_data = self._upload_dataset_to_datastore(dataset, datastore, unischema)
 
-        # Create an experiment
+        script_params = self._create_script_params(ds_data)
+        runconfig = self._create_script_run_config(ds_data, project_folder, script_params)
         experiment = Experiment(self.workspace, name=self.experimentName)
-
-        # Arguments to training script
-        script_params = [
-            '--input_data', str(ds_data),
-            '--output_dir', self.modelPath,
-            '--train_data_percentage', self.train_data_percentage,
-            '--train_batch_size', self.train_batch_size,
-            '--test_batch_size', self.test_batch_size,
-            '--feature_column', self.feature_column,
-            '--training_script', training_script_name
-        ]
-        
-        print("User defined args: ", self.user_defined_args)
-        script_params.extend(self.user_defined_args)
-        print("Script_params: ", script_params)
-
-        runconfig = ScriptRunConfig(source_directory=project_folder, script='wrapper.py', arguments=script_params)
-        runconfig.run_config.target = self.clusterName
-        runconfig.run_config.environment = self.environment
-        runconfig.run_config.environment.docker.base_image = "mcr.microsoft.com/azureml/base-gpu:openmpi3.1.2-cuda10.0-cudnn7-ubuntu16.04"
-        runconfig.run_config.environment.docker.enabled = True
-        runconfig.run_config.environment.docker.gpu_support = True
-        runconfig.run_config.environment.environment_variables = {
-            "EXAMPLE_ENV_VAR": "EXAMPLE_VALUE",
-            "NCCL_IB_DISABLE": "1",
-            "NCCL_SOCKET_IFNAME": "eth0",
-            "NCCL_TREE_THRESHOLD": "0",
-        }
-        runconfig.run_config.node_count = self.nodeCount
-        runconfig.run_config.mpi = MpiConfiguration()
-        runconfig.run_config.communicator = "Mpi"
-        runconfig.run_config.data_references = {
-            ds_data.data_reference_name: DataReferenceConfiguration(datastore_name=ds_data.datastore.name, 
-                mode='mount', path_on_datastore=ds_data.path_on_datastore, 
-                path_on_compute=ds_data.path_on_compute, overwrite=ds_data.overwrite) 
-        }
-
         run = experiment.submit(config=runconfig)
         print("Job submitted!")
 
