@@ -16,6 +16,7 @@ import ntpath
 import importlib.util
 import uuid
 import pyarrow
+import cloudpickle
 from functools import reduce
 from petastorm.etl.dataset_metadata import materialize_dataset, infer_or_load_unischema
 
@@ -56,9 +57,8 @@ class PyTorchEstimator(Estimator):
         experimentName (str): Name of current experiment
 
     """
-
-    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, preprocessor, environment,
-                    train_data_percentage, train_batch_size, test_batch_size, loop_epochs, feature_column, user_defined_args, is_managed):
+    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, train_preprocessor, val_preprocessor, 
+                    test_preprocessor, environment, train_data_percentage, train_batch_size, test_batch_size, loop_epochs, feature_column, user_defined_args, is_managed):
         self.workspace = workspace
         self.clusterName = clusterName
         self.trainingScript = trainingScript
@@ -66,16 +66,31 @@ class PyTorchEstimator(Estimator):
         self.nodeCount = nodeCount
         self.modelPath = modelPath
         self.experimentName = experimentName
-        self.preprocessor = preprocessor
+        self.train_preprocessor = train_preprocessor
+        self.val_preprocessor = val_preprocessor
+        self.test_preprocessor = test_preprocessor
         self.environment = environment
         self.train_data_percentage = train_data_percentage
         self.train_batch_size = train_batch_size
         self.test_batch_size = test_batch_size
         self.loop_epochs = loop_epochs
         self.feature_column = feature_column
-        # Convert dictionary to list
         self.user_defined_args = list(reduce(lambda x, y: x + y, user_defined_args.items()))
         self.is_managed = is_managed
+
+    def _create_project_directory(self, project_folder, train_preprocessor_filename, val_preprocessor_filename):
+        os.makedirs(project_folder, exist_ok=True)
+        shutil.copy(self.trainingScript, project_folder)
+        shutil.copy(self.modelScript, project_folder)
+        # TODO: Pyspark cannot have paths like this
+        shutil.copy('/home/azureuser/mmlspark/src/pytorch/wrapper.py', project_folder)
+        pickled_train_preprocessor = cloudpickle.dumps(self.train_preprocessor)
+        with open(os.path.join(project_folder, train_preprocessor_filename), 'wb+') as train_preprocessor_file:
+            train_preprocessor_file.write(pickled_train_preprocessor)
+
+        pickled_val_preprocessor = cloudpickle.dumps(self.val_preprocessor)
+        with open(os.path.join(project_folder, val_preprocessor_filename), 'wb+') as val_preprocessor_file:
+            val_preprocessor_file.write(pickled_val_preprocessor)
     
     def _infer_unischema(self, dataset):
         # ============================ WIP: GET UNISCHEMA FROM DATASET ==================================
@@ -159,7 +174,6 @@ class PyTorchEstimator(Estimator):
             compute_config = AmlCompute.provisioning_configuration(vm_size='STANDARD_NC6', 
                                                                 max_nodes=4)
 
-            # create the cluster
             compute_target = ComputeTarget.create(self.workspace, self.clusterName, compute_config)
             compute_target.wait_for_completion(show_output=True)
 
@@ -180,8 +194,8 @@ class PyTorchEstimator(Estimator):
         ds_data = datastore.path(datastore_path)
         return ds_data
 
-    def _create_script_params(self, ds_data):
-        # Extract names of scripts from full path to pass as argument to PyTorch
+    def _create_script_params(self, ds_data, train_preprocessor_filename, val_preprocessor_filename):
+        # Extract name of script from full path to pass as argument to PyTorch
         training_script_name = ntpath.basename(self.trainingScript)
 
         script_params = [
@@ -193,7 +207,9 @@ class PyTorchEstimator(Estimator):
             '--loop_epochs', self.loop_epochs,
             '--feature_column', self.feature_column,
             '--training_script', training_script_name,
-            '--is_managed', self.is_managed
+            '--is_managed', self.is_managed,
+            '--train_preprocessor_filename', train_preprocessor_filename,
+            '--val_preprocessor_filename', val_preprocessor_filename,
         ]
         script_params.extend(self.user_defined_args)
 
@@ -228,23 +244,21 @@ class PyTorchEstimator(Estimator):
         :param dataset: input dataset, which is an instance of :py:class:`pyspark.sql.DataFrame`
         :returns: fitted model
         """
-        # Create a project directory
         project_folder = './pytorch-train'
-        os.makedirs(project_folder, exist_ok=True)
-        shutil.copy(self.trainingScript, project_folder)
-        shutil.copy(self.modelScript, project_folder)
-        shutil.copy('/home/azureuser/mmlspark/src/pytorch/wrapper.py', project_folder)
+        train_preprocessor_filename = 'train_preprocessor'
+        val_preprocessor_filename = 'val_preprocessor'
 
+        self._create_project_directory(project_folder, train_preprocessor_filename, val_preprocessor_filename)
         unischema = self._infer_unischema(dataset)
         datastore = self.workspace.get_default_datastore()
         compute_target = self._get_or_create_compute_target()
         ds_data = self._upload_dataset_to_datastore(dataset, datastore, unischema)
 
-        script_params = self._create_script_params(ds_data)
+        script_params = self._create_script_params(ds_data, train_preprocessor_filename, val_preprocessor_filename)
         runconfig = self._create_script_run_config(ds_data, project_folder, script_params)
         experiment = Experiment(self.workspace, name=self.experimentName)
         run = experiment.submit(config=runconfig)
         print("Job submitted!")
 
-        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.preprocessor)
+        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.test_preprocessor)
         return fittedModel

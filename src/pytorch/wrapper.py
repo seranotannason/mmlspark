@@ -3,6 +3,7 @@ import sys
 import numpy as np
 import cv2
 import argparse
+import pickle
 from torchvision import transforms
 from petastorm.pytorch import DataLoader
 from petastorm import make_reader, TransformSpec
@@ -19,61 +20,38 @@ parser.add_argument('--feature_column', type=str, help='name of feature column')
 parser.add_argument('--training_script', type=str, help='name of training script')
 parser.add_argument('--loop_epochs', default=2, type=int, help='number of epochs')
 parser.add_argument('--is_managed', type=bool, help='flag indicating script boilerplate is managed by AML')
+parser.add_argument('--train_preprocessor_filename', default='train_preprocessor', type=str, help='file that contains pickled preprocessing function for training data')
+parser.add_argument('--val_preprocessor_filename', default='val_preprocessor', type=str, help='file that contains pickled preprocessing function for validation data')
 args, remaining_args = parser.parse_known_args()
 
-def _transform_row_train(cifar_row):
-    image = cv2.imdecode(np.frombuffer(cifar_row['image'], dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+with open(args.train_preprocessor_filename, mode='rb') as train_preprocessor_file:
+    train_preprocessor = pickle.loads(train_preprocessor_file.read())
 
-    transform_train = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
+with open(args.val_preprocessor_filename, mode='rb') as val_preprocessor_file:
+    val_preprocessor = pickle.loads(val_preprocessor_file.read())
 
-    result_row = {
-        'image': transform_train(image),
-        'label': cifar_row['label']
-    }
-    return result_row
-
-def _transform_row_test(cifar_row):
-    image = cv2.imdecode(np.frombuffer(cifar_row['image'], dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-
-    transform_test = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
-    
-    result_row = {
-        'image': transform_test(image),
-        'label': cifar_row['label']
-    }  
-    return result_row
-
-transform_spec_train = TransformSpec(_transform_row_train)
-transform_spec_test = TransformSpec(_transform_row_test)
+transform_spec_train = TransformSpec(train_preprocessor)
+transform_spec_val = TransformSpec(val_preprocessor)
 
 # TODO: check that 0 <= train_ratio <= 1
 train_ratio = args.train_data_percentage
 test_ratio = 1.0 - train_ratio
 
 print("Entering wrapper.py (2)...\n")
-# TODO: generalize transform
 # TODO: generic predicate
 # TODO: add seed
+# TODO: add ID column, change feature_column here
 trainloader = DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([train_ratio, test_ratio], 0, args.feature_column), 
                                     transform_spec=transform_spec_train), 
                         batch_size=args.train_batch_size)
 
 testloader =  DataLoader(make_reader('file://' + args.input_data, predicate=in_pseudorandom_split([train_ratio, test_ratio], 1, args.feature_column), 
-                                    transform_spec=transform_spec_test), 
+                                    transform_spec=transform_spec_val), 
                         batch_size=args.test_batch_size)
     
 sys.argv = sys.argv[:1] + remaining_args
 
-# TODO: improve this
+# TODO: check with AK and improve this
 if not args.is_managed:
     print("Entering custom code...\n")
     runpy.run_path(args.training_script, globals(), run_name="__main__")
