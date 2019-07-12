@@ -58,7 +58,8 @@ class PyTorchEstimator(Estimator):
 
     """
     def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, train_preprocessor, val_preprocessor, 
-                    test_preprocessor, environment, train_data_percentage, train_batch_size, test_batch_size, loop_epochs, feature_column, user_defined_args, is_managed):
+                    test_preprocessor, environment, train_data_percentage, train_batch_size, test_batch_size, loop_epochs, feature_column, 
+                    user_defined_args, is_managed, allow_default_env_config):
         self.workspace = workspace
         self.clusterName = clusterName
         self.trainingScript = trainingScript
@@ -77,6 +78,7 @@ class PyTorchEstimator(Estimator):
         self.feature_column = feature_column
         self.user_defined_args = list(reduce(lambda x, y: x + y, user_defined_args.items()))
         self.is_managed = is_managed
+        self.allow_default_env_config = allow_default_env_config
 
     def _create_project_directory(self, project_folder, train_preprocessor_filename, val_preprocessor_filename):
         os.makedirs(project_folder, exist_ok=True)
@@ -219,15 +221,6 @@ class PyTorchEstimator(Estimator):
         script_run_config = ScriptRunConfig(source_directory=project_folder, script='wrapper.py', arguments=script_params)
         script_run_config.run_config.target = self.clusterName
         script_run_config.run_config.environment = self.environment
-        script_run_config.run_config.environment.docker.base_image = "mcr.microsoft.com/azureml/base-gpu:openmpi3.1.2-cuda10.0-cudnn7-ubuntu16.04"
-        script_run_config.run_config.environment.docker.enabled = True
-        script_run_config.run_config.environment.docker.gpu_support = True
-        # TODO: Add to dictionary if the user gives a boolean flag. usually users only wanna modify env vars
-        script_run_config.run_config.environment.environment_variables = {
-            "NCCL_IB_DISABLE": "1",
-            "NCCL_SOCKET_IFNAME": "eth0",
-            "NCCL_TREE_THRESHOLD": "0",
-        }
         script_run_config.run_config.node_count = self.nodeCount
         script_run_config.run_config.mpi = MpiConfiguration()
         script_run_config.run_config.communicator = "Mpi"
@@ -236,6 +229,15 @@ class PyTorchEstimator(Estimator):
                 mode='mount', path_on_datastore=ds_data.path_on_datastore, 
                 path_on_compute=ds_data.path_on_compute, overwrite=ds_data.overwrite) 
         }
+        script_run_config.run_config.environment.docker.enabled = True
+        script_run_config.run_config.environment.docker.gpu_support = True
+        if self.allow_default_env_config:
+            script_run_config.run_config.environment.docker.base_image = "mcr.microsoft.com/azureml/base-gpu:openmpi3.1.2-cuda10.0-cudnn7-ubuntu16.04"
+            script_run_config.run_config.environment.environment_variables.update({
+                "NCCL_IB_DISABLE": "1",
+                "NCCL_SOCKET_IFNAME": "eth0",
+                "NCCL_TREE_THRESHOLD": "0",
+            })
         return script_run_config
 
     def _fit(self, dataset):
