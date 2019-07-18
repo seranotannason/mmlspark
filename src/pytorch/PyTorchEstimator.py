@@ -40,7 +40,7 @@ from pyspark.sql.session import SparkSession
 
 sc = SparkContext.getOrCreate()
 spark = SparkSession(sc)
-
+TRAINING_SCRIPT_NAME = "pytorch_train"
 
 class PyTorchEstimator(Estimator):
     """
@@ -49,23 +49,35 @@ class PyTorchEstimator(Estimator):
 
     Args:
 
-        workspace (Workspace): Azure ML Workspace object
+        workspace (azureml.core.workspace.Workspace): Azure ML Workspace object
         clusterName (str): Name of Azure ML Compute Target in the above workspace
-        trainingScript (str): Full path to training script
+        scriptsFolder (str): Full path to folder containing all user scripts
+        trainingScriptName (str): Name of training script without extension
         nodeCount (int): Number of nodes to train on
-        modelPath (str): Cloud path that the model will be saved to, relative to /outputs dir
+        outputPath (str): Cloud path that the model will be saved to, relative to /outputs dir
         experimentName (str): Name of current experiment
+        trainPreprocessor (function): Preprocessing function for training data
+        valPreprocessor (function): Preprocessing function for validation data
+        testPreprocessor (function): Preprocessing function for test data
+        environment (azureml.core.Environment): Azure ML Environment object
+        trainDataPercentage (float): Percentage of data dedicated for training
+        trainBatchSize (int): Size of training data batches
+        testBatchSize (int): Size of test data batches
+        loopEpochs (int): Number of epochs to train
+        featureColumn (str): Name of column containing the features
+        userDefinedArgs ()
+        
 
     """
-    def __init__(self, workspace, clusterName, trainingScript, modelScript, nodeCount, modelPath, experimentName, train_preprocessor, val_preprocessor, 
+    def __init__(self, workspace, clusterName, scriptsFolder, trainingScriptName, nodeCount, outputPath, experimentName, train_preprocessor, val_preprocessor, 
                     test_preprocessor, environment, train_data_percentage, train_batch_size, test_batch_size, loop_epochs, feature_column, 
                     user_defined_args, is_managed, allow_default_env_config):
         self.workspace = workspace
         self.clusterName = clusterName
-        self.trainingScript = trainingScript
-        self.modelScript = modelScript
+        self.scripts_folder = scriptsFolder
+        self.training_script_name = trainingScriptName
         self.nodeCount = nodeCount
-        self.modelPath = modelPath
+        self.outputPath = outputPath
         self.experimentName = experimentName
         self.train_preprocessor = train_preprocessor
         self.val_preprocessor = val_preprocessor
@@ -80,22 +92,30 @@ class PyTorchEstimator(Estimator):
         self.is_managed = is_managed
         self.allow_default_env_config = allow_default_env_config
 
-    def _create_project_directory(self, project_folder, train_preprocessor_filename, val_preprocessor_filename):
-        os.makedirs(project_folder, exist_ok=True)
-        shutil.copy(self.trainingScript, project_folder)
-        shutil.copy(self.modelScript, project_folder)
-        # TODO: Pyspark cannot have paths like this
-        shutil.copy('/home/azureuser/mmlspark/src/pytorch/wrapper.py', project_folder)
+    def _create_project_directory(self, train_preprocessor_filename, val_preprocessor_filename):
+        training_script_path = os.path.join(self.scripts_folder, self.training_script_name + '.py')
+        if not os.path.isfile(training_script_path):
+            raise Exception("Training script does not exist in the scripts folder.")
+
+        working_folder = '/tmp/pytorch_scripts'
+        if os.path.isdir(working_folder):
+            shutil.rmtree(working_folder)
+        shutil.copytree(self.scripts_folder, working_folder)
+        os.rename(os.path.join(working_folder, self.training_script_name + '.py'), 
+                  os.path.join(working_folder, TRAINING_SCRIPT_NAME + '.py'))
+        shutil.copy('./wrapper.py', working_folder)
+
         pickled_train_preprocessor = cloudpickle.dumps(self.train_preprocessor)
-        with open(os.path.join(project_folder, train_preprocessor_filename), 'wb+') as train_preprocessor_file:
+        with open(os.path.join(working_folder, train_preprocessor_filename), 'wb+') as train_preprocessor_file:
             train_preprocessor_file.write(pickled_train_preprocessor)
 
         pickled_val_preprocessor = cloudpickle.dumps(self.val_preprocessor)
-        with open(os.path.join(project_folder, val_preprocessor_filename), 'wb+') as val_preprocessor_file:
+        with open(os.path.join(working_folder, val_preprocessor_filename), 'wb+') as val_preprocessor_file:
             val_preprocessor_file.write(pickled_val_preprocessor)
+
+        return working_folder
     
     def _infer_unischema(self, dataset):
-        # ============================ WIP: GET UNISCHEMA FROM DATASET ==================================
         pandas_dataset = dataset.toPandas()
         arrow_schema = pyarrow.Schema.from_pandas(pandas_dataset)
 
@@ -165,7 +185,6 @@ class PyTorchEstimator(Estimator):
             unischema_fields.append(UnischemaField(column_name, np_type, (), codec, arrow_field.nullable))
         
         return Unischema('inferred_schema', unischema_fields)
-        # ============================ WIP: GET UNISCHEMA FROM DATASET ==================================
 
     def _get_or_create_compute_target(self):
         try:
@@ -197,18 +216,15 @@ class PyTorchEstimator(Estimator):
         return ds_data
 
     def _create_script_params(self, ds_data, train_preprocessor_filename, val_preprocessor_filename):
-        # Extract name of script from full path to pass as argument to PyTorch
-        training_script_name = ntpath.basename(self.trainingScript)
-
         script_params = [
             '--input_data', str(ds_data),
-            '--output_dir', self.modelPath,
+            '--output_dir', self.outputPath,
             '--train_data_percentage', self.train_data_percentage,
             '--train_batch_size', self.train_batch_size,
             '--test_batch_size', self.test_batch_size,
             '--loop_epochs', self.loop_epochs,
             '--feature_column', self.feature_column,
-            '--training_script', training_script_name,
+            '--training_script_name', TRAINING_SCRIPT_NAME,
             '--is_managed', self.is_managed,
             '--train_preprocessor_filename', train_preprocessor_filename,
             '--val_preprocessor_filename', val_preprocessor_filename,
@@ -217,10 +233,31 @@ class PyTorchEstimator(Estimator):
 
         return script_params
 
-    def _create_script_run_config(self, ds_data, project_folder, script_params):
-        script_run_config = ScriptRunConfig(source_directory=project_folder, script='wrapper.py', arguments=script_params)
+    def _create_script_run_config(self, ds_data, working_folder, script_params):
+        script_run_config = ScriptRunConfig(source_directory=working_folder, script='wrapper.py', arguments=script_params)
         script_run_config.run_config.target = self.clusterName
         script_run_config.run_config.environment = self.environment
+
+        petastorm_pkg = CondaDependencies._register_private_pip_wheel_to_blob(self.workspace, '/home/azureuser/serano-petastorm/dist/petastorm-0.9.0.dev0-py2.py3-none-any.whl')
+        pip_packages = [
+            "pandas", 
+            "opencv-python-headless", 
+            petastorm_pkg, 
+            "azureml-mlflow", 
+            "Pillow==6.0.0", 
+            "torch==1.1", 
+            "torchvision==0.2.1",
+            "horovod==0.16.1",
+            "pyarrow==0.12.1"
+        ]
+        for pip_package in pip_packages:
+            script_run_config.run_config.environment.python.conda_dependencies.add_pip_package(pip_package)
+        conda_packages = [
+            "opencv"
+        ]
+        for conda_package in conda_packages:
+            script_run_config.run_config.environment.python.conda_dependencies.add_conda_package(conda_package)
+
         script_run_config.run_config.node_count = self.nodeCount
         script_run_config.run_config.mpi = MpiConfiguration()
         script_run_config.run_config.communicator = "Mpi"
@@ -237,6 +274,7 @@ class PyTorchEstimator(Estimator):
                 "NCCL_IB_DISABLE": "1",
                 "NCCL_SOCKET_IFNAME": "eth0",
                 "NCCL_TREE_THRESHOLD": "0",
+                "PYTHONFAULTHANDLER": "enabled",
             })
         return script_run_config
 
@@ -246,21 +284,21 @@ class PyTorchEstimator(Estimator):
         :param dataset: input dataset, which is an instance of :py:class:`pyspark.sql.DataFrame`
         :returns: fitted model
         """
-        project_folder = './pytorch-train'
         train_preprocessor_filename = 'train_preprocessor'
         val_preprocessor_filename = 'val_preprocessor'
 
-        self._create_project_directory(project_folder, train_preprocessor_filename, val_preprocessor_filename)
+        working_folder = self._create_project_directory(train_preprocessor_filename, val_preprocessor_filename)
         unischema = self._infer_unischema(dataset)
+        print("Inferred unischema: ", unischema)
         datastore = self.workspace.get_default_datastore()
         compute_target = self._get_or_create_compute_target()
         ds_data = self._upload_dataset_to_datastore(dataset, datastore, unischema)
 
         script_params = self._create_script_params(ds_data, train_preprocessor_filename, val_preprocessor_filename)
-        runconfig = self._create_script_run_config(ds_data, project_folder, script_params)
+        runconfig = self._create_script_run_config(ds_data, working_folder, script_params)
         experiment = Experiment(self.workspace, name=self.experimentName)
         run = experiment.submit(config=runconfig)
         print("Job submitted!")
 
-        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.modelPath, self.test_preprocessor)
+        fittedModel = PyTorchModel(run.id, experiment, self.workspace, self.outputPath, self.test_preprocessor)
         return fittedModel
