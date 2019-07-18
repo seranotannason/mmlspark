@@ -238,6 +238,5 @@ if __name__ == "__main__":
             test(epoch, testloader)
             testloader.reader.reset()
 
-        print('==> Saving best model to {}...'.format(args.output_dir))
         mlflow.pytorch.log_model(best_model, args.output_dir)
         
