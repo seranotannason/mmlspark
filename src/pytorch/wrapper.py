@@ -63,17 +63,21 @@ if __name__ == "__main__":
     else:
         print("Entering managed boilerplate...\n")
         globals_dict = runpy.run_path(args.training_script_name + '.py', globals())
-        train = globals_dict['train']
-        test = globals_dict['test']
-        get_best_model = globals_dict['get_best_model']
+        # train and get_best_model functions are required, test is optional
+        train = globals_dict.get('train')
+        test = globals_dict.get('test')
+        get_best_model = globals_dict.get('get_best_model')
+        if train is None or get_best_model is None:
+            raise Exception("Training script must have functions: train, get_best_model")
 
         with mlflow.start_run() as mlflow_run:
             for epoch in range(args.loop_epochs):
                 train(epoch, trainloader)
                 trainloader.reader.reset()
 
-                test(epoch, testloader)
-                testloader.reader.reset()
+                if test is not None:
+                    test(epoch, testloader)
+                    testloader.reader.reset()
 
             best_model = get_best_model()
             mlflow.pytorch.log_model(best_model, args.output_dir)
