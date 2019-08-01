@@ -65,8 +65,10 @@ class PyTorchEstimator(Estimator):
         testBatchSize (int): Size of test data batches
         loopEpochs (int): Number of epochs to train
         featureColumn (str): Name of column containing the features
-        userDefinedArgs ()
-        
+        userDefinedArgs (dict): Parameters to user's training script
+        isManaged (bool): Flag indicating if user's code execution is to be managed
+        allowDefaultEnvConfig (bool): Flag indicating if default base image and environment variables should be used
+     
 
     """
     def __init__(self, workspace, clusterName, scriptsFolder, trainingScriptName, nodeCount, outputPath, experimentName, train_preprocessor, val_preprocessor, 
